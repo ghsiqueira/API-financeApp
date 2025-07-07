@@ -1,25 +1,12 @@
 const express = require('express')
 const router = express.Router()
-const { body } = require('express-validator')
-const auth = require('../middleware/authMiddleware')
-const categoryController = require('../controllers/categoryController')
+const Category = require('../models/Category')
+const authMiddleware = require('../middleware/authMiddleware')
+const { categoryValidation } = require('../middleware/validation')
+const { validationResult } = require('express-validator')
 
-// Middleware de autenticação
-router.use(auth)
-
-// Validações
-const categoryValidation = [
-  body('nome').trim().isLength({ min: 1, max: 50 }).withMessage('Nome deve ter entre 1 e 50 caracteres'),
-  body('tipo').isIn(['receita', 'despesa', 'ambos']).withMessage('Tipo deve ser receita, despesa ou ambos'),
-  body('icone').trim().isLength({ min: 1 }).withMessage('Ícone é obrigatório'),
-  body('cor').matches(/^#[0-9A-F]{6}$/i).withMessage('Cor deve estar em formato hexadecimal')
-]
-
-const subcategoryValidation = [
-  body('nome').trim().isLength({ min: 1, max: 50 }).withMessage('Nome deve ter entre 1 e 50 caracteres'),
-  body('icone').optional().trim(),
-  body('cor').optional().matches(/^#[0-9A-F]{6}$/i).withMessage('Cor deve estar em formato hexadecimal')
-]
+// Aplicar middleware de autenticação em todas as rotas
+router.use(authMiddleware)
 
 /**
  * @swagger
@@ -27,15 +14,11 @@ const subcategoryValidation = [
  *   schemas:
  *     Category:
  *       type: object
- *       required:
- *         - nome
- *         - tipo
- *         - icone
- *         - cor
  *       properties:
+ *         _id:
+ *           type: string
  *         nome:
  *           type: string
- *           maxLength: 50
  *         tipo:
  *           type: string
  *           enum: [receita, despesa, ambos]
@@ -43,7 +26,6 @@ const subcategoryValidation = [
  *           type: string
  *         cor:
  *           type: string
- *           pattern: ^#[0-9A-F]{6}$
  *         subcategorias:
  *           type: array
  *           items:
@@ -59,15 +41,32 @@ const subcategoryValidation = [
  *                 type: boolean
  *         ativa:
  *           type: boolean
- *         ordem:
- *           type: number
+ *         padrao:
+ *           type: boolean
+ *         estatisticas:
+ *           type: object
+ *           properties:
+ *             totalTransacoes:
+ *               type: number
+ *             totalValor:
+ *               type: number
+ *             ultimaTransacao:
+ *               type: string
+ *               format: date-time
+ */
+
+/**
+ * @swagger
+ * tags:
+ *   name: Categories
+ *   description: Gestão de categorias
  */
 
 /**
  * @swagger
  * /api/categories:
  *   get:
- *     summary: Listar categorias do usuário
+ *     summary: Listar todas as categorias do usuário
  *     tags: [Categories]
  *     security:
  *       - bearerAuth: []
@@ -77,46 +76,65 @@ const subcategoryValidation = [
  *         schema:
  *           type: string
  *           enum: [receita, despesa, ambos]
- *         description: Filtrar por tipo
+ *         description: Filtrar por tipo de categoria
  *       - in: query
- *         name: ativas
+ *         name: ativa
  *         schema:
  *           type: boolean
- *           default: true
- *         description: Filtrar apenas categorias ativas
- *       - in: query
- *         name: incluirEstatisticas
- *         schema:
- *           type: boolean
- *           default: false
- *         description: Incluir estatísticas de uso
+ *         description: Filtrar por categorias ativas/inativas
  *     responses:
  *       200:
  *         description: Lista de categorias
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     $ref: '#/components/schemas/Category'
  */
-router.get('/', categoryController.getAll)
-
-/**
- * @swagger
- * /api/categories/{id}:
- *   get:
- *     summary: Obter categoria por ID com detalhes
- *     tags: [Categories]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *     responses:
- *       200:
- *         description: Categoria com estatísticas e transações recentes
- *       404:
- *         description: Categoria não encontrada
- */
-router.get('/:id', categoryController.getById)
+router.get('/', async (req, res) => {
+  try {
+    const { tipo, ativa } = req.query
+    
+    const filtros = {
+      $or: [
+        { userId: req.userId },
+        { padrao: true, userId: null }
+      ]
+    }
+    
+    if (ativa !== undefined) {
+      filtros.ativa = ativa === 'true'
+    }
+    
+    if (tipo && tipo !== 'ambos') {
+      filtros.$and = [
+        { $or: [{ tipo }, { tipo: 'ambos' }] }
+      ]
+    }
+    
+    const categorias = await Category.find(filtros)
+      .sort({ ordem: 1, nome: 1 })
+      .lean()
+    
+    res.json({
+      success: true,
+      data: categorias
+    })
+    
+  } catch (err) {
+    console.error('Erro ao buscar categorias:', err)
+    res.status(500).json({ 
+      success: false,
+      error: 'Erro interno do servidor' 
+    })
+  }
+})
 
 /**
  * @swagger
@@ -131,31 +149,141 @@ router.get('/:id', categoryController.getById)
  *       content:
  *         application/json:
  *           schema:
- *             $ref: '#/components/schemas/Category'
- *           example:
- *             nome: Freelance
- *             tipo: receita
- *             icone: laptop
- *             cor: "#007AFF"
- *             subcategorias:
- *               - nome: Desenvolvimento Web
- *                 icone: code
- *                 cor: "#007AFF"
- *               - nome: Design Gráfico
- *                 icone: palette
- *                 cor: "#34C759"
+ *             type: object
+ *             required:
+ *               - nome
+ *               - tipo
+ *               - icone
+ *               - cor
+ *             properties:
+ *               nome:
+ *                 type: string
+ *                 example: Freelance
+ *               tipo:
+ *                 type: string
+ *                 enum: [receita, despesa, ambos]
+ *                 example: receita
+ *               icone:
+ *                 type: string
+ *                 example: laptop
+ *               cor:
+ *                 type: string
+ *                 example: "#2196F3"
+ *               subcategorias:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     nome:
+ *                       type: string
+ *                     icone:
+ *                       type: string
+ *                     cor:
+ *                       type: string
  *     responses:
  *       201:
  *         description: Categoria criada com sucesso
  *       400:
- *         description: Dados inválidos ou categoria já existe
+ *         description: Dados inválidos
  */
-router.post('/', categoryValidation, categoryController.create)
+router.post('/', categoryValidation, async (req, res) => {
+  try {
+    const errors = validationResult(req)
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Dados inválidos',
+        detalhes: errors.array().map(err => ({
+          field: err.param,
+          message: err.msg
+        }))
+      })
+    }
+    
+    const categoria = await Category.create({
+      ...req.body,
+      userId: req.userId
+    })
+    
+    res.status(201).json({
+      success: true,
+      message: 'Categoria criada com sucesso',
+      data: categoria
+    })
+    
+  } catch (err) {
+    console.error('Erro ao criar categoria:', err)
+    
+    if (err.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        error: 'Categoria com este nome já existe'
+      })
+    }
+    
+    res.status(500).json({ 
+      success: false,
+      error: 'Erro interno do servidor' 
+    })
+  }
+})
 
 /**
  * @swagger
  * /api/categories/{id}:
- *   patch:
+ *   get:
+ *     summary: Obter categoria por ID
+ *     tags: [Categories]
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: ID da categoria
+ *     responses:
+ *       200:
+ *         description: Categoria encontrada
+ *       404:
+ *         description: Categoria não encontrada
+ */
+router.get('/:id', async (req, res) => {
+  try {
+    const categoria = await Category.findOne({
+      _id: req.params.id,
+      $or: [
+        { userId: req.userId },
+        { padrao: true, userId: null }
+      ]
+    })
+    
+    if (!categoria) {
+      return res.status(404).json({
+        success: false,
+        error: 'Categoria não encontrada'
+      })
+    }
+    
+    res.json({
+      success: true,
+      data: categoria
+    })
+    
+  } catch (err) {
+    console.error('Erro ao buscar categoria:', err)
+    res.status(500).json({ 
+      success: false,
+      error: 'Erro interno do servidor' 
+    })
+  }
+})
+
+/**
+ * @swagger
+ * /api/categories/{id}:
+ *   put:
  *     summary: Atualizar categoria
  *     tags: [Categories]
  *     security:
@@ -166,26 +294,81 @@ router.post('/', categoryValidation, categoryController.create)
  *         required: true
  *         schema:
  *           type: string
+ *         description: ID da categoria
  *     requestBody:
+ *       required: true
  *       content:
  *         application/json:
  *           schema:
- *             $ref: '#/components/schemas/Category'
+ *             type: object
+ *             properties:
+ *               nome:
+ *                 type: string
+ *               tipo:
+ *                 type: string
+ *                 enum: [receita, despesa, ambos]
+ *               icone:
+ *                 type: string
+ *               cor:
+ *                 type: string
+ *               ativa:
+ *                 type: boolean
  *     responses:
  *       200:
  *         description: Categoria atualizada com sucesso
- *       403:
- *         description: Não é possível editar categorias padrão
  *       404:
  *         description: Categoria não encontrada
  */
-router.patch('/:id', categoryController.update)
+router.put('/:id', categoryValidation, async (req, res) => {
+  try {
+    const errors = validationResult(req)
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Dados inválidos',
+        detalhes: errors.array().map(err => ({
+          field: err.param,
+          message: err.msg
+        }))
+      })
+    }
+    
+    const categoria = await Category.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        userId: req.userId // Só pode editar próprias categorias
+      },
+      { ...req.body, atualizadoEm: new Date() },
+      { new: true, runValidators: true }
+    )
+    
+    if (!categoria) {
+      return res.status(404).json({
+        success: false,
+        error: 'Categoria não encontrada ou sem permissão'
+      })
+    }
+    
+    res.json({
+      success: true,
+      message: 'Categoria atualizada com sucesso',
+      data: categoria
+    })
+    
+  } catch (err) {
+    console.error('Erro ao atualizar categoria:', err)
+    res.status(500).json({ 
+      success: false,
+      error: 'Erro interno do servidor' 
+    })
+  }
+})
 
 /**
  * @swagger
  * /api/categories/{id}:
  *   delete:
- *     summary: Remover categoria
+ *     summary: Excluir categoria
  *     tags: [Categories]
  *     security:
  *       - bearerAuth: []
@@ -195,21 +378,61 @@ router.patch('/:id', categoryController.update)
  *         required: true
  *         schema:
  *           type: string
+ *         description: ID da categoria
  *     responses:
  *       200:
- *         description: Categoria removida com sucesso
- *       400:
- *         description: Categoria possui transações associadas
- *       403:
- *         description: Não é possível excluir categorias padrão
+ *         description: Categoria excluída com sucesso
  *       404:
  *         description: Categoria não encontrada
+ *       400:
+ *         description: Categoria possui transações vinculadas
  */
-router.delete('/:id', categoryController.remove)
+router.delete('/:id', async (req, res) => {
+  try {
+    // Verificar se a categoria tem transações vinculadas
+    const Transaction = require('../models/Transaction')
+    const transacoesVinculadas = await Transaction.countDocuments({
+      categoria: req.params.id,
+      userId: req.userId
+    })
+    
+    if (transacoesVinculadas > 0) {
+      return res.status(400).json({
+        success: false,
+        error: `Não é possível excluir. Categoria possui ${transacoesVinculadas} transações vinculadas.`
+      })
+    }
+    
+    const categoria = await Category.findOneAndDelete({
+      _id: req.params.id,
+      userId: req.userId, // Só pode excluir próprias categorias
+      padrao: false // Não pode excluir categorias padrão
+    })
+    
+    if (!categoria) {
+      return res.status(404).json({
+        success: false,
+        error: 'Categoria não encontrada ou sem permissão'
+      })
+    }
+    
+    res.json({
+      success: true,
+      message: 'Categoria excluída com sucesso'
+    })
+    
+  } catch (err) {
+    console.error('Erro ao excluir categoria:', err)
+    res.status(500).json({ 
+      success: false,
+      error: 'Erro interno do servidor' 
+    })
+  }
+})
 
 /**
  * @swagger
- * /api/categories/{id}/subcategories:
+ * /api/categories/{id}/subcategoria:
  *   post:
  *     summary: Adicionar subcategoria
  *     tags: [Categories]
@@ -221,6 +444,7 @@ router.delete('/:id', categoryController.remove)
  *         required: true
  *         schema:
  *           type: string
+ *         description: ID da categoria
  *     requestBody:
  *       required: true
  *       content:
@@ -232,74 +456,73 @@ router.delete('/:id', categoryController.remove)
  *             properties:
  *               nome:
  *                 type: string
- *                 maxLength: 50
  *               icone:
  *                 type: string
  *               cor:
  *                 type: string
- *                 pattern: ^#[0-9A-F]{6}$
- *           example:
- *             nome: E-commerce
- *             icone: shopping-cart
- *             cor: "#FF9500"
  *     responses:
  *       200:
  *         description: Subcategoria adicionada com sucesso
- *       400:
- *         description: Subcategoria já existe
- *       403:
- *         description: Não é possível adicionar subcategorias em categorias padrão
- *       404:
- *         description: Categoria não encontrada
  */
-router.post('/:id/subcategories', subcategoryValidation, categoryController.addSubcategoria)
+router.post('/:id/subcategoria', async (req, res) => {
+  try {
+    const { nome, icone, cor } = req.body
+    
+    if (!nome || nome.trim().length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Nome da subcategoria é obrigatório'
+      })
+    }
+    
+    const categoria = await Category.findOne({
+      _id: req.params.id,
+      userId: req.userId
+    })
+    
+    if (!categoria) {
+      return res.status(404).json({
+        success: false,
+        error: 'Categoria não encontrada'
+      })
+    }
+    
+    // Verificar se subcategoria já existe
+    const subcategoriaExistente = categoria.subcategorias.find(
+      sub => sub.nome.toLowerCase() === nome.toLowerCase()
+    )
+    
+    if (subcategoriaExistente) {
+      return res.status(400).json({
+        success: false,
+        error: 'Subcategoria já existe'
+      })
+    }
+    
+    await categoria.adicionarSubcategoria({
+      nome: nome.trim(),
+      icone: icone || categoria.icone,
+      cor: cor || categoria.cor
+    })
+    
+    res.json({
+      success: true,
+      message: 'Subcategoria adicionada com sucesso',
+      data: categoria
+    })
+    
+  } catch (err) {
+    console.error('Erro ao adicionar subcategoria:', err)
+    res.status(500).json({ 
+      success: false,
+      error: 'Erro interno do servidor' 
+    })
+  }
+})
 
 /**
  * @swagger
- * /api/categories/{id}/subcategories/{subcategoriaId}:
- *   patch:
- *     summary: Atualizar subcategoria
- *     tags: [Categories]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *       - in: path
- *         name: subcategoriaId
- *         required: true
- *         schema:
- *           type: string
- *     requestBody:
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               nome:
- *                 type: string
- *               icone:
- *                 type: string
- *               cor:
- *                 type: string
- *               ativa:
- *                 type: boolean
- *     responses:
- *       200:
- *         description: Subcategoria atualizada com sucesso
- *       403:
- *         description: Não é possível editar subcategorias de categorias padrão
- *       404:
- *         description: Categoria ou subcategoria não encontrada
- */
-router.patch('/:id/subcategories/:subcategoriaId', categoryController.updateSubcategoria)
-
-/**
- * @swagger
- * /api/categories/{id}/subcategories/{subcategoriaId}:
+ * /api/categories/{id}/subcategoria/{subId}:
  *   delete:
  *     summary: Remover subcategoria
  *     tags: [Categories]
@@ -311,89 +534,92 @@ router.patch('/:id/subcategories/:subcategoriaId', categoryController.updateSubc
  *         required: true
  *         schema:
  *           type: string
+ *         description: ID da categoria
  *       - in: path
- *         name: subcategoriaId
+ *         name: subId
  *         required: true
  *         schema:
  *           type: string
+ *         description: ID da subcategoria
  *     responses:
  *       200:
  *         description: Subcategoria removida com sucesso
- *       400:
- *         description: Subcategoria possui transações associadas
- *       403:
- *         description: Não é possível remover subcategorias de categorias padrão
- *       404:
- *         description: Categoria ou subcategoria não encontrada
  */
-router.delete('/:id/subcategories/:subcategoriaId', categoryController.removeSubcategoria)
+router.delete('/:id/subcategoria/:subId', async (req, res) => {
+  try {
+    const categoria = await Category.findOne({
+      _id: req.params.id,
+      userId: req.userId
+    })
+    
+    if (!categoria) {
+      return res.status(404).json({
+        success: false,
+        error: 'Categoria não encontrada'
+      })
+    }
+    
+    await categoria.removerSubcategoria(req.params.subId)
+    
+    res.json({
+      success: true,
+      message: 'Subcategoria removida com sucesso',
+      data: categoria
+    })
+    
+  } catch (err) {
+    console.error('Erro ao remover subcategoria:', err)
+    res.status(500).json({ 
+      success: false,
+      error: 'Erro interno do servidor' 
+    })
+  }
+})
 
 /**
  * @swagger
- * /api/categories/statistics:
+ * /api/categories/populares:
  *   get:
- *     summary: Obter estatísticas das categorias
+ *     summary: Obter categorias mais usadas
  *     tags: [Categories]
  *     security:
  *       - bearerAuth: []
  *     parameters:
  *       - in: query
- *         name: periodo
+ *         name: limite
  *         schema:
- *           type: string
- *           enum: [semana, mes, trimestre, ano]
- *           default: mes
+ *           type: integer
+ *           default: 5
+ *         description: Número máximo de categorias
  *     responses:
  *       200:
- *         description: Estatísticas detalhadas por categoria
+ *         description: Categorias populares
  */
-router.get('/statistics/overview', categoryController.getEstatisticas)
+router.get('/populares', async (req, res) => {
+  try {
+    const limite = parseInt(req.query.limite) || 5
+    
+    const categorias = await Category.buscarPopulares(req.userId, limite)
+    
+    res.json({
+      success: true,
+      data: categorias
+    })
+    
+  } catch (err) {
+    console.error('Erro ao buscar categorias populares:', err)
+    res.status(500).json({ 
+      success: false,
+      error: 'Erro interno do servidor' 
+    })
+  }
+})
 
 /**
  * @swagger
- * /api/categories/order:
- *   patch:
- *     summary: Atualizar ordem das categorias
- *     tags: [Categories]
- *     security:
- *       - bearerAuth: []
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - categorias
- *             properties:
- *               categorias:
- *                 type: array
- *                 items:
- *                   type: object
- *                   properties:
- *                     id:
- *                       type: string
- *                     ordem:
- *                       type: number
- *           example:
- *             categorias:
- *               - id: "60f1b2c3d4e5f6789abcdef0"
- *                 ordem: 0
- *               - id: "60f1b2c3d4e5f6789abcdef1"
- *                 ordem: 1
- *     responses:
- *       200:
- *         description: Ordem das categorias atualizada com sucesso
- *       400:
- *         description: Lista de categorias inválida
- */
-router.patch('/order/update', categoryController.updateOrdem)
-
-/**
- * @swagger
- * /api/categories/{id}/duplicate:
- *   post:
- *     summary: Duplicar categoria
+ * /api/categories/{id}/estatisticas:
+ *   get:
+ *     summary: Obter estatísticas da categoria
  *     tags: [Categories]
  *     security:
  *       - bearerAuth: []
@@ -403,114 +629,78 @@ router.patch('/order/update', categoryController.updateOrdem)
  *         required: true
  *         schema:
  *           type: string
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - nome
- *             properties:
- *               nome:
- *                 type: string
- *                 maxLength: 50
- *           example:
- *             nome: Alimentação Trabalho
- *     responses:
- *       201:
- *         description: Categoria duplicada com sucesso
- *       400:
- *         description: Já existe categoria com este nome
- *       404:
- *         description: Categoria não encontrada
- */
-router.post('/:id/duplicate', categoryController.duplicar)
-
-/**
- * @swagger
- * /api/categories/search:
- *   get:
- *     summary: Buscar categorias por nome
- *     tags: [Categories]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: q
- *         required: true
- *         schema:
- *           type: string
- *           minLength: 2
- *         description: Termo de busca
- *       - in: query
- *         name: tipo
- *         schema:
- *           type: string
- *           enum: [receita, despesa, ambos]
- *       - in: query
- *         name: limite
- *         schema:
- *           type: integer
- *           default: 10
+ *         description: ID da categoria
  *     responses:
  *       200:
- *         description: Resultados da busca
- *       400:
- *         description: Termo de busca deve ter pelo menos 2 caracteres
+ *         description: Estatísticas da categoria
  */
-router.get('/search/find', categoryController.buscar)
+router.get('/:id/estatisticas', async (req, res) => {
+  try {
+    const categoria = await Category.findOne({
+      _id: req.params.id,
+      $or: [
+        { userId: req.userId },
+        { padrao: true, userId: null }
+      ]
+    })
+    
+    if (!categoria) {
+      return res.status(404).json({
+        success: false,
+        error: 'Categoria não encontrada'
+      })
+    }
+    
+    await categoria.atualizarEstatisticas()
+    
+    res.json({
+      success: true,
+      data: {
+        categoria: categoria.nome,
+        estatisticas: categoria.estatisticas
+      }
+    })
+    
+  } catch (err) {
+    console.error('Erro ao buscar estatísticas:', err)
+    res.status(500).json({ 
+      success: false,
+      error: 'Erro interno do servidor' 
+    })
+  }
+})
 
 /**
  * @swagger
- * /api/categories/import/defaults:
+ * /api/categories/recriar-padroes:
  *   post:
- *     summary: Importar categorias padrão
+ *     summary: Recriar categorias padrão (se não existirem)
  *     tags: [Categories]
  *     security:
  *       - bearerAuth: []
- *     requestBody:
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             properties:
- *               sobrescrever:
- *                 type: boolean
- *                 default: false
- *                 description: Sobrescrever categorias existentes
  *     responses:
  *       200:
- *         description: Categorias padrão importadas com sucesso
+ *         description: Categorias padrão recriadas
  */
-router.post('/import/defaults', categoryController.importarPadrao)
-
-/**
- * @swagger
- * /api/categories/export:
- *   get:
- *     summary: Exportar categorias do usuário
- *     tags: [Categories]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: formato
- *         schema:
- *           type: string
- *           enum: [json, csv]
- *           default: json
- *     responses:
- *       200:
- *         description: Categorias exportadas com sucesso
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *           text/csv:
- *             schema:
- *               type: string
- */
-router.get('/export/data', categoryController.exportar)
+router.post('/recriar-padroes', async (req, res) => {
+  try {
+    const categoriasCriadas = await Category.criarCategoriasPadrao(req.userId)
+    
+    res.json({
+      success: true,
+      message: categoriasCriadas.length > 0 
+        ? `${categoriasCriadas.length} categorias padrão criadas`
+        : 'Categorias já existem',
+      data: categoriasCriadas
+    })
+    
+  } catch (err) {
+    console.error('Erro ao recriar categorias padrão:', err)
+    res.status(500).json({ 
+      success: false,
+      error: 'Erro interno do servidor' 
+    })
+  }
+})
 
 module.exports = router

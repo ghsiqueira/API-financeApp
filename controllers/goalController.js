@@ -1,18 +1,24 @@
 const Goal = require('../models/Goal')
-const Transaction = require('../models/Transaction')
-const { validationResult } = require('express-validator')
 const mongoose = require('mongoose')
+const { validationResult } = require('express-validator')
 
+/**
+ * Listar todas as metas do usuário com filtros e paginação
+ */
 exports.getAll = async (req, res) => {
   try {
+    console.log('🎯 Buscando metas para usuário:', req.userId)
+    
     const { 
       status, 
       categoria, 
       prioridade,
-      page = 1,
+      periodo,
+      page = 1, 
       limit = 20,
       sortBy = 'dataLimite',
-      sortOrder = 'asc'
+      sortOrder = 'asc',
+      search
     } = req.query
 
     // Construir filtros
@@ -21,6 +27,34 @@ exports.getAll = async (req, res) => {
     if (status) filtros.status = status
     if (categoria) filtros.categoria = categoria
     if (prioridade) filtros.prioridade = prioridade
+
+    // Filtro por período
+    if (periodo) {
+      const agora = new Date()
+      let dataInicio = new Date()
+      
+      switch (periodo) {
+        case 'mes':
+          dataInicio = new Date(agora.getFullYear(), agora.getMonth(), 1)
+          break
+        case 'trimestre':
+          dataInicio = new Date(agora.getFullYear(), agora.getMonth() - 3, 1)
+          break
+        case 'ano':
+          dataInicio = new Date(agora.getFullYear(), 0, 1)
+          break
+      }
+      
+      filtros.dataInicio = { $gte: dataInicio }
+    }
+
+    // Filtro de busca
+    if (search) {
+      filtros.$or = [
+        { titulo: { $regex: search, $options: 'i' } },
+        { descricao: { $regex: search, $options: 'i' } }
+      ]
+    }
 
     // Configurar paginação
     const pageNum = parseInt(page)
@@ -31,7 +65,7 @@ exports.getAll = async (req, res) => {
     const sortOptions = {}
     sortOptions[sortBy] = sortOrder === 'desc' ? -1 : 1
 
-    // Buscar metas
+    // Buscar metas com paginação
     const [metas, total] = await Promise.all([
       Goal.find(filtros)
         .sort(sortOptions)
@@ -41,151 +75,218 @@ exports.getAll = async (req, res) => {
       Goal.countDocuments(filtros)
     ])
 
-    // Enriquecer dados das metas
-    const metasEnriquecidas = metas.map(meta => {
-      const diasRestantes = Math.max(0, Math.ceil((new Date(meta.dataLimite) - new Date()) / (1000 * 60 * 60 * 24)))
-      const porcentagemConcluida = meta.valorAlvo > 0 ? Math.min(100, Math.round((meta.valorAtual / meta.valorAlvo) * 100)) : 0
-      const valorRestante = Math.max(0, meta.valorAlvo - meta.valorAtual)
+    // Calcular progresso e estatísticas para cada meta
+    const metasComProgresso = metas.map(meta => {
+      const porcentagemConcluida = Math.min((meta.valorAtual / meta.valorAlvo) * 100, 100)
+      const diasRestantes = Math.max(
+        Math.ceil((new Date(meta.dataLimite) - new Date()) / (1000 * 60 * 60 * 24)), 
+        0
+      )
+      const valorRestante = Math.max(meta.valorAlvo - meta.valorAtual, 0)
       
+      // Calcular valor necessário por dia/mês
+      const valorPorDia = diasRestantes > 0 ? valorRestante / diasRestantes : 0
+      const valorPorMes = valorPorDia * 30.44 // Média de dias por mês
+
       return {
         ...meta,
+        porcentagemConcluida: Math.round(porcentagemConcluida * 100) / 100,
         diasRestantes,
-        porcentagemConcluida,
         valorRestante,
-        estaConcluida: meta.valorAtual >= meta.valorAlvo,
-        valorMensalNecessario: diasRestantes > 0 ? 
-          Math.ceil(valorRestante / Math.max(1, Math.ceil(diasRestantes / 30))) : 0,
-        valorDiarioNecessario: diasRestantes > 0 ? 
-          Math.ceil(valorRestante / diasRestantes) : 0
+        sugestoes: {
+          valorPorDia: Math.round(valorPorDia * 100) / 100,
+          valorPorMes: Math.round(valorPorMes * 100) / 100
+        },
+        estatisticas: {
+          totalContribuicoes: meta.contribuicoes?.length || 0,
+          ultimaContribuicao: meta.contribuicoes?.length > 0 
+            ? meta.contribuicoes[meta.contribuicoes.length - 1].data 
+            : null
+        }
       }
     })
 
-    // Calcular estatísticas gerais
-    const estatisticas = metasEnriquecidas.reduce((acc, meta) => {
-      acc.total++
-      acc.valorTotalAlvo += meta.valorAlvo
-      acc.valorTotalAtual += meta.valorAtual
-      
-      if (meta.estaConcluida) acc.concluidas++
-      if (meta.status === 'ativa' && !meta.estaConcluida) acc.ativas++
-      if (meta.diasRestantes <= 30 && meta.diasRestantes > 0 && !meta.estaConcluida) acc.vencendoEm30Dias++
-      if (meta.prioridade === 'alta') acc.altaPrioridade++
-      
-      return acc
-    }, {
-      total: 0,
-      concluidas: 0,
-      ativas: 0,
-      vencendoEm30Dias: 0,
-      altaPrioridade: 0,
-      valorTotalAlvo: 0,
-      valorTotalAtual: 0
-    })
-
-    estatisticas.porcentagemGeralConcluida = estatisticas.valorTotalAlvo > 0 ? 
-      Math.round((estatisticas.valorTotalAtual / estatisticas.valorTotalAlvo) * 100) : 0
+    console.log(`✅ ${metas.length} metas encontradas`)
 
     res.json({
       success: true,
-      data: {
-        metas: metasEnriquecidas,
-        paginacao: {
-          currentPage: pageNum,
-          totalPages: Math.ceil(total / limitNum),
-          totalItems: total,
-          itemsPerPage: limitNum
-        },
-        estatisticas
+      data: metasComProgresso,
+      pagination: {
+        current: pageNum,
+        pages: Math.ceil(total / limitNum),
+        total,
+        hasNext: pageNum < Math.ceil(total / limitNum),
+        hasPrev: pageNum > 1
+      },
+      filtros: {
+        status,
+        categoria,
+        prioridade,
+        periodo,
+        search
       }
     })
 
   } catch (err) {
-    console.error('Erro ao buscar metas:', err)
-    res.status(500).json({ error: 'Erro interno do servidor' })
+    console.error('❌ Erro ao buscar metas:', err)
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor',
+      details: process.env.NODE_ENV === 'development' ? err.message : undefined
+    })
   }
 }
 
+/**
+ * Obter meta específica por ID
+ */
 exports.getById = async (req, res) => {
   try {
-    const { id } = req.params
-
+    console.log('🎯 Buscando meta:', req.params.id)
+    
     const meta = await Goal.findOne({
-      _id: id,
+      _id: req.params.id,
       userId: req.userId
     })
 
     if (!meta) {
-      return res.status(404).json({ error: 'Meta não encontrada' })
-    }
-
-    // Calcular estatísticas detalhadas
-    const estatisticas = meta.calcularEstatisticas()
-    const diasRestantes = meta.diasRestantes()
-    const valorMensalNecessario = meta.valorMensalNecessario()
-    const valorDiarioNecessario = meta.valorDiarioNecessario()
-
-    // Buscar transações relacionadas (se houver)
-    const transacoesRelacionadas = await Transaction.find({
-      metaId: id,
-      userId: req.userId
-    }).sort({ data: -1 })
-
-    // Calcular progresso por mês
-    const progressoPorMes = calcularProgressoPorMes(meta.contribuicoes, meta.dataInicio)
-
-    // Verificar milestones alcançados
-    const milestonesAlcancados = meta.milestones.filter(m => m.alcancado).length
-
-    res.json({
-      success: true,
-      data: {
-        meta: {
-          ...meta.toObject(),
-          diasRestantes,
-          valorMensalNecessario,
-          valorDiarioNecessario,
-          porcentagemConcluida: meta.porcentagemConcluida,
-          valorRestante: meta.valorRestante,
-          estaConcluida: meta.estaConcluida
-        },
-        estatisticas,
-        transacoesRelacionadas,
-        progressoPorMes,
-        milestonesAlcancados,
-        alertas: gerarAlertasMeta(meta, diasRestantes, valorMensalNecessario)
-      }
-    })
-
-  } catch (err) {
-    console.error('Erro ao buscar meta:', err)
-    res.status(500).json({ error: 'Erro interno do servidor' })
-  }
-}
-
-exports.create = async (req, res) => {
-  try {
-    const errors = validationResult(req)
-    if (!errors.isEmpty()) {
-      return res.status(400).json({
-        error: 'Dados inválidos',
-        detalhes: errors.array()
+      return res.status(404).json({
+        success: false,
+        error: 'Meta não encontrada'
       })
     }
 
-    const dadosMeta = { ...req.body, userId: req.userId }
+    // Calcular estatísticas detalhadas
+    const porcentagemConcluida = Math.min((meta.valorAtual / meta.valorAlvo) * 100, 100)
+    const diasRestantes = Math.max(
+      Math.ceil((new Date(meta.dataLimite) - new Date()) / (1000 * 60 * 60 * 24)), 
+      0
+    )
+    const diasDecorridos = Math.ceil((new Date() - new Date(meta.dataInicio)) / (1000 * 60 * 60 * 24))
+    const valorRestante = Math.max(meta.valorAlvo - meta.valorAtual, 0)
+    
+    // Calcular velocidade de progresso
+    const velocidadeProgresso = diasDecorridos > 0 ? meta.valorAtual / diasDecorridos : 0
+    const tempoEstimado = velocidadeProgresso > 0 ? valorRestante / velocidadeProgresso : Infinity
+    
+    // Calcular valor necessário por período
+    const valorPorDia = diasRestantes > 0 ? valorRestante / diasRestantes : 0
+    const valorPorSemana = valorPorDia * 7
+    const valorPorMes = valorPorDia * 30.44
 
-    // Validar datas
-    if (new Date(dadosMeta.dataLimite) <= new Date()) {
-      return res.status(400).json({ error: 'Data limite deve ser futura' })
+    // Analisar histórico de contribuições
+    const contribuicoes = meta.contribuicoes || []
+    const ultimaContribuicao = contribuicoes.length > 0 ? contribuicoes[contribuicoes.length - 1] : null
+    const totalContribuicoes = contribuicoes.reduce((sum, c) => sum + c.valor, 0)
+    const mediaContribuicao = contribuicoes.length > 0 ? totalContribuicoes / contribuicoes.length : 0
+
+    const metaDetalhada = {
+      ...meta.toObject(),
+      progresso: {
+        porcentagemConcluida: Math.round(porcentagemConcluida * 100) / 100,
+        valorAtual: meta.valorAtual,
+        valorAlvo: meta.valorAlvo,
+        valorRestante,
+        diasRestantes,
+        diasDecorridos,
+        velocidadeProgresso: Math.round(velocidadeProgresso * 100) / 100,
+        tempoEstimadoDias: tempoEstimado === Infinity ? null : Math.ceil(tempoEstimado)
+      },
+      sugestoes: {
+        valorPorDia: Math.round(valorPorDia * 100) / 100,
+        valorPorSemana: Math.round(valorPorSemana * 100) / 100,
+        valorPorMes: Math.round(valorPorMes * 100) / 100
+      },
+      estatisticas: {
+        totalContribuicoes: contribuicoes.length,
+        valorTotalContribuido: totalContribuicoes,
+        mediaContribuicao: Math.round(mediaContribuicao * 100) / 100,
+        ultimaContribuicao: ultimaContribuicao ? {
+          valor: ultimaContribuicao.valor,
+          data: ultimaContribuicao.data,
+          nota: ultimaContribuicao.nota
+        } : null
+      }
     }
 
-    // Criar milestones automáticos se não fornecidos
-    if (!dadosMeta.milestones || dadosMeta.milestones.length === 0) {
-      dadosMeta.milestones = criarMilestonesAutomaticos(dadosMeta.valorAlvo)
+    console.log('✅ Meta encontrada:', meta._id)
+
+    res.json({
+      success: true,
+      data: metaDetalhada
+    })
+
+  } catch (err) {
+    console.error('❌ Erro ao buscar meta:', err)
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor'
+    })
+  }
+}
+
+/**
+ * Criar nova meta
+ */
+exports.create = async (req, res) => {
+  try {
+    console.log('🎯 Criando nova meta:', req.body)
+    
+    const errors = validationResult(req)
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Dados inválidos',
+        detalhes: errors.array().map(err => ({
+          field: err.param,
+          message: err.msg
+        }))
+      })
+    }
+
+    // Validações adicionais
+    const { titulo, valorAlvo, dataLimite } = req.body
+    
+    if (new Date(dataLimite) <= new Date()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Data limite deve ser futura'
+      })
+    }
+
+    if (valorAlvo <= 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Valor alvo deve ser maior que zero'
+      })
+    }
+
+    // Verificar se já existe meta com mesmo título
+    const metaExistente = await Goal.findOne({
+      userId: req.userId,
+      titulo: titulo.trim(),
+      status: { $in: ['ativa', 'pausada'] }
+    })
+
+    if (metaExistente) {
+      return res.status(400).json({
+        success: false,
+        error: 'Já existe uma meta ativa com este título'
+      })
     }
 
     // Criar meta
+    const dadosMeta = {
+      ...req.body,
+      userId: req.userId,
+      titulo: titulo.trim(),
+      dataInicio: req.body.dataInicio || new Date(),
+      status: 'ativa'
+    }
+
     const meta = await Goal.create(dadosMeta)
+
+    console.log('✅ Meta criada com sucesso:', meta._id)
 
     res.status(201).json({
       success: true,
@@ -194,44 +295,76 @@ exports.create = async (req, res) => {
     })
 
   } catch (err) {
-    console.error('Erro ao criar meta:', err)
-    res.status(500).json({ error: 'Erro interno do servidor' })
+    console.error('❌ Erro ao criar meta:', err)
+    
+    if (err.name === 'ValidationError') {
+      return res.status(400).json({
+        success: false,
+        error: 'Dados inválidos',
+        detalhes: Object.values(err.errors).map(e => ({
+          field: e.path,
+          message: e.message
+        }))
+      })
+    }
+
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor'
+    })
   }
 }
 
+/**
+ * Atualizar meta existente
+ */
 exports.update = async (req, res) => {
   try {
-    const { id } = req.params
-    const updates = req.body
-
-    const meta = await Goal.findOne({
-      _id: id,
-      userId: req.userId
-    })
-
-    if (!meta) {
-      return res.status(404).json({ error: 'Meta não encontrada' })
+    console.log('🎯 Atualizando meta:', req.params.id)
+    
+    const errors = validationResult(req)
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Dados inválidos',
+        detalhes: errors.array().map(err => ({
+          field: err.param,
+          message: err.msg
+        }))
+      })
     }
 
-    // Não permitir alterar valor atual diretamente (usar contribuições)
-    if (updates.valorAtual !== undefined) {
-      delete updates.valorAtual
-    }
-
-    // Aplicar atualizações
-    Object.keys(updates).forEach(key => {
-      if (key !== 'userId' && key !== 'contribuicoes') {
-        meta[key] = updates[key]
+    // Não permitir alterar campos específicos
+    const dadosProibidos = ['userId', 'valorAtual', 'contribuicoes', 'criadoEm']
+    dadosProibidos.forEach(campo => {
+      if (req.body[campo] !== undefined) {
+        delete req.body[campo]
       }
     })
 
-    // Recriar milestones se valor alvo mudou
-    if (updates.valorAlvo && updates.valorAlvo !== meta.valorAlvo) {
-      meta.milestones = criarMilestonesAutomaticos(updates.valorAlvo)
-      meta.verificarMilestones()
+    const meta = await Goal.findOneAndUpdate(
+      {
+        _id: req.params.id,
+        userId: req.userId
+      },
+      { 
+        ...req.body, 
+        atualizadoEm: new Date() 
+      },
+      { 
+        new: true, 
+        runValidators: true 
+      }
+    )
+
+    if (!meta) {
+      return res.status(404).json({
+        success: false,
+        error: 'Meta não encontrada'
+      })
     }
 
-    await meta.save()
+    console.log('✅ Meta atualizada:', meta._id)
 
     res.json({
       success: true,
@@ -240,78 +373,145 @@ exports.update = async (req, res) => {
     })
 
   } catch (err) {
-    console.error('Erro ao atualizar meta:', err)
-    res.status(500).json({ error: 'Erro interno do servidor' })
+    console.error('❌ Erro ao atualizar meta:', err)
+    
+    if (err.name === 'ValidationError') {
+      return res.status(400).json({
+        success: false,
+        error: 'Dados inválidos',
+        detalhes: Object.values(err.errors).map(e => ({
+          field: e.path,
+          message: e.message
+        }))
+      })
+    }
+
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor'
+    })
   }
 }
 
-exports.remove = async (req, res) => {
+/**
+ * Excluir meta
+ */
+exports.delete = async (req, res) => {
   try {
-    const { id } = req.params
-
-    const meta = await Goal.findOne({
-      _id: id,
+    console.log('🎯 Excluindo meta:', req.params.id)
+    
+    const meta = await Goal.findOneAndDelete({
+      _id: req.params.id,
       userId: req.userId
     })
 
     if (!meta) {
-      return res.status(404).json({ error: 'Meta não encontrada' })
+      return res.status(404).json({
+        success: false,
+        error: 'Meta não encontrada'
+      })
     }
 
-    // Remover referências em transações
-    await Transaction.updateMany(
-      { metaId: id },
-      { $unset: { metaId: 1 } }
-    )
-
-    // Deletar meta
-    await Goal.deleteOne({ _id: id, userId: req.userId })
+    console.log('✅ Meta excluída:', meta._id)
 
     res.json({
       success: true,
-      message: 'Meta removida com sucesso'
+      message: 'Meta excluída com sucesso',
+      data: {
+        metaExcluida: {
+          id: meta._id,
+          titulo: meta.titulo,
+          valorAlvo: meta.valorAlvo,
+          valorAtual: meta.valorAtual
+        }
+      }
     })
 
   } catch (err) {
-    console.error('Erro ao remover meta:', err)
-    res.status(500).json({ error: 'Erro interno do servidor' })
+    console.error('❌ Erro ao excluir meta:', err)
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor'
+    })
   }
 }
 
+/**
+ * Adicionar contribuição à meta
+ */
 exports.addContribuicao = async (req, res) => {
   try {
-    const { id } = req.params
-    const { valor, nota = '', tipo = 'contribuicao' } = req.body
+    console.log('💰 Adicionando contribuição à meta:', req.params.id)
+    
+    const { valor, nota, data, tipo = 'contribuicao' } = req.body
 
+    // Validações
     if (!valor || valor <= 0) {
-      return res.status(400).json({ error: 'Valor deve ser maior que zero' })
+      return res.status(400).json({
+        success: false,
+        error: 'Valor da contribuição deve ser maior que zero'
+      })
     }
 
     const meta = await Goal.findOne({
-      _id: id,
+      _id: req.params.id,
       userId: req.userId
     })
 
     if (!meta) {
-      return res.status(404).json({ error: 'Meta não encontrada' })
+      return res.status(404).json({
+        success: false,
+        error: 'Meta não encontrada'
+      })
     }
 
     if (meta.status !== 'ativa') {
-      return res.status(400).json({ error: 'Não é possível contribuir para uma meta inativa' })
+      return res.status(400).json({
+        success: false,
+        error: 'Só é possível adicionar contribuições a metas ativas'
+      })
     }
 
     // Adicionar contribuição
+    const novaContribuicao = {
+      valor: tipo === 'retirada' ? -Math.abs(valor) : Math.abs(valor),
+      nota: nota || '',
+      data: data ? new Date(data) : new Date(),
+      tipo: tipo || 'contribuicao'
+    }
+
+    meta.contribuicoes.push(novaContribuicao)
+
+    // Atualizar valor atual
     const valorAnterior = meta.valorAtual
-    meta.adicionarContribuicao(valor, nota, tipo)
-    
-    // Verificar se a meta foi concluída
-    const foiConcluida = !meta.estaConcluida && valorAnterior < meta.valorAlvo && meta.valorAtual >= meta.valorAlvo
+    meta.valorAtual += novaContribuicao.valor
+
+    // Garantir que o valor atual não seja negativo
+    if (meta.valorAtual < 0) {
+      meta.valorAtual = 0
+    }
+
+    // Verificar se meta foi atingida
+    const foiConcluida = valorAnterior < meta.valorAlvo && meta.valorAtual >= meta.valorAlvo
+    if (foiConcluida) {
+      meta.status = 'concluida'
+      meta.dataConclusao = new Date()
+    }
+
+    // Verificar se meta voltou a estar pendente
+    if (meta.valorAtual < meta.valorAlvo && meta.status === 'concluida') {
+      meta.status = 'ativa'
+      meta.dataConclusao = null
+    }
 
     await meta.save()
 
-    let mensagem = `${tipo === 'contribuicao' ? 'Contribuição' : tipo === 'retirada' ? 'Retirada' : 'Ajuste'} registrado com sucesso`
+    console.log(`✅ Contribuição de ${novaContribuicao.valor} adicionada à meta ${meta._id}`)
+
+    // Preparar resposta
+    let mensagem = `${tipo === 'contribuicao' ? 'Contribuição' : tipo === 'retirada' ? 'Retirada' : 'Ajuste'} de R$ ${Math.abs(valor)} registrada com sucesso`
     if (foiConcluida) {
-      mensagem += '. Parabéns! Meta concluída! 🎉'
+      mensagem += '. 🎉 Parabéns! Meta atingida!'
     }
 
     res.json({
@@ -319,28 +519,113 @@ exports.addContribuicao = async (req, res) => {
       message: mensagem,
       data: {
         meta,
-        contribuicaoAdicionada: {
-          valor,
-          nota,
-          tipo,
-          data: new Date()
-        },
-        metaConcluida: foiConcluida
+        contribuicaoAdicionada: novaContribuicao,
+        alteracoes: {
+          valorAnterior,
+          valorAtual: meta.valorAtual,
+          progressoAnterior: Math.round((valorAnterior / meta.valorAlvo) * 100),
+          progressoAtual: Math.round((meta.valorAtual / meta.valorAlvo) * 100),
+          metaConcluida: foiConcluida
+        }
       }
     })
 
   } catch (err) {
-    console.error('Erro ao adicionar contribuição:', err)
-    res.status(500).json({ error: 'Erro interno do servidor' })
+    console.error('❌ Erro ao adicionar contribuição:', err)
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor'
+    })
   }
 }
 
+/**
+ * Remover contribuição específica
+ */
+exports.removeContribuicao = async (req, res) => {
+  try {
+    console.log('🗑️ Removendo contribuição:', req.params.contributionId)
+    
+    const meta = await Goal.findOne({
+      _id: req.params.id,
+      userId: req.userId
+    })
+
+    if (!meta) {
+      return res.status(404).json({
+        success: false,
+        error: 'Meta não encontrada'
+      })
+    }
+
+    const contribuicao = meta.contribuicoes.id(req.params.contributionId)
+    if (!contribuicao) {
+      return res.status(404).json({
+        success: false,
+        error: 'Contribuição não encontrada'
+      })
+    }
+
+    // Guardar dados da contribuição antes de remover
+    const contribuicaoRemovida = {
+      valor: contribuicao.valor,
+      nota: contribuicao.nota,
+      data: contribuicao.data,
+      tipo: contribuicao.tipo
+    }
+
+    // Subtrair valor da contribuição
+    meta.valorAtual -= contribuicao.valor
+
+    // Garantir que não fique negativo
+    if (meta.valorAtual < 0) {
+      meta.valorAtual = 0
+    }
+
+    // Remover contribuição
+    contribuicao.remove()
+
+    // Verificar se status da meta deve mudar
+    if (meta.valorAtual < meta.valorAlvo && meta.status === 'concluida') {
+      meta.status = 'ativa'
+      meta.dataConclusao = null
+    }
+
+    await meta.save()
+
+    console.log('✅ Contribuição removida da meta:', meta._id)
+
+    res.json({
+      success: true,
+      message: 'Contribuição removida com sucesso',
+      data: {
+        meta,
+        contribuicaoRemovida
+      }
+    })
+
+  } catch (err) {
+    console.error('❌ Erro ao remover contribuição:', err)
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor'
+    })
+  }
+}
+
+/**
+ * Pausar meta
+ */
 exports.pausar = async (req, res) => {
   try {
-    const { id } = req.params
-
+    console.log('⏸️ Pausando meta:', req.params.id)
+    
     const meta = await Goal.findOneAndUpdate(
-      { _id: id, userId: req.userId },
+      { 
+        _id: req.params.id, 
+        userId: req.userId,
+        status: { $in: ['ativa'] }
+      },
       { 
         status: 'pausada',
         atualizadoEm: new Date()
@@ -349,8 +634,13 @@ exports.pausar = async (req, res) => {
     )
 
     if (!meta) {
-      return res.status(404).json({ error: 'Meta não encontrada' })
+      return res.status(404).json({
+        success: false,
+        error: 'Meta não encontrada ou não pode ser pausada'
+      })
     }
+
+    console.log('✅ Meta pausada:', meta._id)
 
     res.json({
       success: true,
@@ -359,17 +649,27 @@ exports.pausar = async (req, res) => {
     })
 
   } catch (err) {
-    console.error('Erro ao pausar meta:', err)
-    res.status(500).json({ error: 'Erro interno do servidor' })
+    console.error('❌ Erro ao pausar meta:', err)
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor'
+    })
   }
 }
 
+/**
+ * Reativar meta pausada
+ */
 exports.reativar = async (req, res) => {
   try {
-    const { id } = req.params
-
+    console.log('▶️ Reativando meta:', req.params.id)
+    
     const meta = await Goal.findOneAndUpdate(
-      { _id: id, userId: req.userId },
+      { 
+        _id: req.params.id, 
+        userId: req.userId,
+        status: 'pausada'
+      },
       { 
         status: 'ativa',
         atualizadoEm: new Date()
@@ -378,8 +678,13 @@ exports.reativar = async (req, res) => {
     )
 
     if (!meta) {
-      return res.status(404).json({ error: 'Meta não encontrada' })
+      return res.status(404).json({
+        success: false,
+        error: 'Meta não encontrada ou não está pausada'
+      })
     }
+
+    console.log('✅ Meta reativada:', meta._id)
 
     res.json({
       success: true,
@@ -388,136 +693,229 @@ exports.reativar = async (req, res) => {
     })
 
   } catch (err) {
-    console.error('Erro ao reativar meta:', err)
-    res.status(500).json({ error: 'Erro interno do servidor' })
+    console.error('❌ Erro ao reativar meta:', err)
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor'
+    })
   }
 }
 
+/**
+ * Marcar meta como concluída
+ */
 exports.concluir = async (req, res) => {
   try {
-    const { id } = req.params
-
+    console.log('✅ Concluindo meta:', req.params.id)
+    
     const meta = await Goal.findOne({
-      _id: id,
+      _id: req.params.id,
       userId: req.userId
     })
 
     if (!meta) {
-      return res.status(404).json({ error: 'Meta não encontrada' })
-    }
-
-    if (meta.valorAtual < meta.valorAlvo) {
-      return res.status(400).json({ 
-        error: 'Meta não pode ser concluída pois o valor alvo ainda não foi atingido' 
+      return res.status(404).json({
+        success: false,
+        error: 'Meta não encontrada'
       })
     }
 
+    if (meta.status === 'concluida') {
+      return res.status(400).json({
+        success: false,
+        error: 'Meta já está concluída'
+      })
+    }
+
+    // Verificar se pode ser concluída
+    if (meta.valorAtual < meta.valorAlvo) {
+      // Permitir conclusão manual, mas avisar
+      const confirmacao = req.body.forcar || false
+      
+      if (!confirmacao) {
+        return res.status(400).json({
+          success: false,
+          error: 'Meta não atingiu o valor alvo ainda',
+          valorAtual: meta.valorAtual,
+          valorAlvo: meta.valorAlvo,
+          valorRestante: meta.valorAlvo - meta.valorAtual,
+          dica: 'Para forçar a conclusão, envie "forcar: true" no body da requisição'
+        })
+      }
+    }
+
     meta.status = 'concluida'
+    meta.dataConclusao = new Date()
+    
     await meta.save()
+
+    console.log('🎉 Meta concluída:', meta._id)
 
     res.json({
       success: true,
-      message: 'Parabéns! Meta concluída com sucesso! 🎉',
+      message: '🎉 Parabéns! Meta concluída com sucesso!',
       data: meta
     })
 
   } catch (err) {
-    console.error('Erro ao concluir meta:', err)
-    res.status(500).json({ error: 'Erro interno do servidor' })
+    console.error('❌ Erro ao concluir meta:', err)
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor'
+    })
   }
 }
 
+/**
+ * Obter resumo geral das metas
+ */
 exports.getResumo = async (req, res) => {
   try {
+    console.log('📊 Gerando resumo das metas para usuário:', req.userId)
+    
     const { periodo = 'todas' } = req.query
     
+    // Filtro por período
     let filtroData = {}
     if (periodo !== 'todas') {
       const agora = new Date()
+      let dataInicio = new Date()
+      
       switch (periodo) {
         case 'mes':
-          filtroData.dataLimite = { 
-            $gte: agora,
-            $lte: new Date(agora.getFullYear(), agora.getMonth() + 1, 0)
-          }
+          dataInicio = new Date(agora.getFullYear(), agora.getMonth(), 1)
           break
         case 'trimestre':
-          filtroData.dataLimite = {
-            $gte: agora,
-            $lte: new Date(agora.getFullYear(), agora.getMonth() + 3, 0)
-          }
+          dataInicio = new Date(agora.getFullYear(), agora.getMonth() - 3, 1)
           break
         case 'ano':
-          filtroData.dataLimite = {
-            $gte: agora,
-            $lte: new Date(agora.getFullYear(), 11, 31)
-          }
+          dataInicio = new Date(agora.getFullYear(), 0, 1)
           break
       }
+      
+      filtroData = { dataInicio: { $gte: dataInicio } }
     }
 
-    const metas = await Goal.find({
+    const userObjectId = new mongoose.Types.ObjectId(req.userId)
+
+    // Agregação para estatísticas gerais
+    const estatisticas = await Goal.aggregate([
+      {
+        $match: {
+          userId: userObjectId,
+          ...filtroData
+        }
+      },
+      {
+        $addFields: {
+          porcentagemConcluida: {
+            $multiply: [
+              { $divide: ['$valorAtual', '$valorAlvo'] },
+              100
+            ]
+          }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: 1 },
+          ativas: {
+            $sum: { $cond: [{ $eq: ['$status', 'ativa'] }, 1, 0] }
+          },
+          pausadas: {
+            $sum: { $cond: [{ $eq: ['$status', 'pausada'] }, 1, 0] }
+          },
+          concluidas: {
+            $sum: { $cond: [{ $eq: ['$status', 'concluida'] }, 1, 0] }
+          },
+          canceladas: {
+            $sum: { $cond: [{ $eq: ['$status', 'cancelada'] }, 1, 0] }
+          },
+          valorTotalAlvo: { $sum: '$valorAlvo' },
+          valorTotalAtual: { $sum: '$valorAtual' },
+          progressoMedio: { $avg: '$porcentagemConcluida' }
+        }
+      }
+    ])
+
+    // Estatísticas por categoria
+    const estatisticasPorCategoria = await Goal.aggregate([
+      {
+        $match: {
+          userId: userObjectId,
+          ...filtroData
+        }
+      },
+      {
+        $group: {
+          _id: '$categoria',
+          total: { $sum: 1 },
+          valorTotalAlvo: { $sum: '$valorAlvo' },
+          valorTotalAtual: { $sum: '$valorAtual' },
+          concluidas: {
+            $sum: { $cond: [{ $eq: ['$status', 'concluida'] }, 1, 0] }
+          }
+        }
+      },
+      {
+        $addFields: {
+          progressoMedio: {
+            $multiply: [
+              { $divide: ['$valorTotalAtual', '$valorTotalAlvo'] },
+              100
+            ]
+          }
+        }
+      },
+      {
+        $sort: { total: -1 }
+      }
+    ])
+
+    // Metas próximas do vencimento (próximos 30 dias)
+    const proximoVencimento = new Date()
+    proximoVencimento.setDate(proximoVencimento.getDate() + 30)
+
+    const metasProximasVencimento = await Goal.find({
       userId: req.userId,
-      ...filtroData
+      status: 'ativa',
+      dataLimite: {
+        $gte: new Date(),
+        $lte: proximoVencimento
+      }
     })
+    .sort({ dataLimite: 1 })
+    .limit(5)
+    .select('titulo valorAlvo valorAtual dataLimite categoria')
 
     const resumo = {
-      total: metas.length,
-      ativas: 0,
-      concluidas: 0,
-      pausadas: 0,
-      canceladas: 0,
-      valorTotalAlvo: 0,
-      valorTotalAtual: 0,
-      porCategoria: {},
-      porPrioridade: { alta: 0, media: 0, baixa: 0 },
-      metasVencendoEm30Dias: 0,
-      metasAtrasadas: 0,
-      eficienciaGeral: 0
+      periodo,
+      estatisticasGerais: estatisticas[0] || {
+        total: 0,
+        ativas: 0,
+        pausadas: 0,
+        concluidas: 0,
+        canceladas: 0,
+        valorTotalAlvo: 0,
+        valorTotalAtual: 0,
+        progressoMedio: 0
+      },
+      estatisticasPorCategoria,
+      metasProximasVencimento: metasProximasVencimento.map(meta => ({
+        ...meta.toObject(),
+        diasRestantes: Math.ceil((new Date(meta.dataLimite) - new Date()) / (1000 * 60 * 60 * 24)),
+        porcentagemConcluida: Math.round((meta.valorAtual / meta.valorAlvo) * 100)
+      })),
+      insights: {
+        categoriaFavorita: estatisticasPorCategoria[0]?._id || null,
+        progressoGeral: estatisticas[0] ? Math.round(estatisticas[0].progressoMedio) : 0,
+        metasVencendoEm30Dias: metasProximasVencimento.length
+      },
+      atualizadoEm: new Date()
     }
 
-    const agora = new Date()
-    
-    metas.forEach(meta => {
-      // Contadores por status
-      resumo[meta.status]++
-      
-      // Totais
-      resumo.valorTotalAlvo += meta.valorAlvo
-      resumo.valorTotalAtual += meta.valorAtual
-      
-      // Por categoria
-      if (!resumo.porCategoria[meta.categoria]) {
-        resumo.porCategoria[meta.categoria] = { count: 0, valorAlvo: 0, valorAtual: 0 }
-      }
-      resumo.porCategoria[meta.categoria].count++
-      resumo.porCategoria[meta.categoria].valorAlvo += meta.valorAlvo
-      resumo.porCategoria[meta.categoria].valorAtual += meta.valorAtual
-      
-      // Por prioridade
-      resumo.porPrioridade[meta.prioridade]++
-      
-      // Metas vencendo
-      const diasRestantes = Math.ceil((meta.dataLimite - agora) / (1000 * 60 * 60 * 24))
-      if (diasRestantes <= 30 && diasRestantes > 0 && meta.status === 'ativa') {
-        resumo.metasVencendoEm30Dias++
-      }
-      
-      // Metas atrasadas
-      if (diasRestantes < 0 && meta.status === 'ativa' && meta.valorAtual < meta.valorAlvo) {
-        resumo.metasAtrasadas++
-      }
-    })
-
-    // Calcular eficiência geral
-    resumo.eficienciaGeral = resumo.valorTotalAlvo > 0 ? 
-      Math.round((resumo.valorTotalAtual / resumo.valorTotalAlvo) * 100) : 0
-
-    // Calcular porcentagem por categoria
-    Object.keys(resumo.porCategoria).forEach(categoria => {
-      const cat = resumo.porCategoria[categoria]
-      cat.porcentagem = cat.valorAlvo > 0 ? Math.round((cat.valorAtual / cat.valorAlvo) * 100) : 0
-    })
+    console.log('✅ Resumo gerado com sucesso')
 
     res.json({
       success: true,
@@ -525,105 +923,247 @@ exports.getResumo = async (req, res) => {
     })
 
   } catch (err) {
-    console.error('Erro ao buscar resumo:', err)
-    res.status(500).json({ error: 'Erro interno do servidor' })
+    console.error('❌ Erro no resumo das metas:', err)
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor'
+    })
   }
 }
 
+/**
+ * Obter relatório detalhado das metas
+ */
 exports.getRelatorio = async (req, res) => {
   try {
-    const { dataInicio, dataFim, categoria, status } = req.query
+    console.log('📋 Gerando relatório detalhado das metas')
+    
+    const { 
+      dataInicio, 
+      dataFim, 
+      categoria, 
+      status,
+      formato = 'json'
+    } = req.query
 
+    // Construir filtros
     const filtros = { userId: req.userId }
     
     if (categoria) filtros.categoria = categoria
     if (status) filtros.status = status
     
     if (dataInicio || dataFim) {
-      filtros.$or = []
-      
-      if (dataInicio && dataFim) {
-        filtros.$or.push({
-          dataInicio: { $lte: new Date(dataFim) },
-          dataLimite: { $gte: new Date(dataInicio) }
-        })
-      } else if (dataInicio) {
-        filtros.dataLimite = { $gte: new Date(dataInicio) }
-      } else if (dataFim) {
-        filtros.dataInicio = { $lte: new Date(dataFim) }
-      }
+      filtros.dataInicio = {}
+      if (dataInicio) filtros.dataInicio.$gte = new Date(dataInicio)
+      if (dataFim) filtros.dataInicio.$lte = new Date(dataFim)
     }
 
-    const metas = await Goal.find(filtros).sort({ dataLimite: 1 })
+    const userObjectId = new mongoose.Types.ObjectId(req.userId)
 
-    const relatorio = {
-      periodo: {
-        inicio: dataInicio ? new Date(dataInicio) : null,
-        fim: dataFim ? new Date(dataFim) : null
+    // Buscar todas as metas com detalhes
+    const metas = await Goal.find(filtros).sort({ dataInicio: -1 })
+
+    // Calcular estatísticas detalhadas
+    const estatisticasDetalhadas = await Goal.aggregate([
+      { $match: { userId: userObjectId, ...filtros } },
+      {
+        $addFields: {
+          porcentagemConcluida: {
+            $multiply: [{ $divide: ['$valorAtual', '$valorAlvo'] }, 100]
+          },
+          diasParaMeta: {
+            $ceil: {
+              $divide: [
+                { $subtract: ['$dataLimite', '$dataInicio'] },
+                86400000
+              ]
+            }
+          },
+          diasDecorridos: {
+            $ceil: {
+              $divide: [
+                { $subtract: [new Date(), '$dataInicio'] },
+                86400000
+              ]
+            }
+          }
+        }
       },
-      totalMetas: metas.length,
-      metasDetalhadas: [],
-      estatisticas: {
-        concluidas: 0,
-        emAndamento: 0,
-        atrasadas: 0,
-        totalInvestido: 0,
-        totalAlvo: 0,
-        mediaTempoConclusao: 0,
-        sucessoRate: 0
-      },
-      insights: []
-    }
-
-    const agora = new Date()
-    let tempoTotalConclusao = 0
-    let metasConcluidas = 0
-
-    metas.forEach(meta => {
-      const diasRestantes = Math.ceil((meta.dataLimite - agora) / (1000 * 60 * 60 * 24))
-      const diasDecorridos = Math.ceil((agora - meta.dataInicio) / (1000 * 60 * 60 * 24))
-      const porcentagemConcluida = meta.valorAlvo > 0 ? (meta.valorAtual / meta.valorAlvo) * 100 : 0
-      
-      const metaDetalhada = {
-        ...meta.toObject(),
-        diasRestantes,
-        diasDecorridos,
-        porcentagemConcluida: Math.round(porcentagemConcluida),
-        valorRestante: Math.max(0, meta.valorAlvo - meta.valorAtual),
-        status: meta.status,
-        performance: calcularPerformanceMeta(meta, diasDecorridos, diasRestantes)
-      }
-
-      relatorio.metasDetalhadas.push(metaDetalhada)
-      relatorio.estatisticas.totalInvestido += meta.valorAtual
-      relatorio.estatisticas.totalAlvo += meta.valorAlvo
-
-      if (meta.status === 'concluida') {
-        relatorio.estatisticas.concluidas++
-        metasConcluidas++
-        
-        // Calcular tempo de conclusão
-        const tempoConclusao = Math.ceil((meta.atualizadoEm - meta.dataInicio) / (1000 * 60 * 60 * 24))
-        tempoTotalConclusao += tempoConclusao
-      } else if (meta.status === 'ativa') {
-        if (diasRestantes < 0 && porcentagemConcluida < 100) {
-          relatorio.estatisticas.atrasadas++
-        } else {
-          relatorio.estatisticas.emAndamento++
+      {
+        $group: {
+          _id: null,
+          totalMetas: { $sum: 1 },
+          valorTotalAlvo: { $sum: '$valorAlvo' },
+          valorTotalAtual: { $sum: '$valorAtual' },
+          progressoMedio: { $avg: '$porcentagemConcluida' },
+          tempoMedioMeta: { $avg: '$diasParaMeta' },
+          metasConcluidas: {
+            $sum: { $cond: [{ $eq: ['$status', 'concluida'] }, 1, 0] }
+          },
+          metasAtivas: {
+            $sum: { $cond: [{ $eq: ['$status', 'ativa'] }, 1, 0] }
+          }
         }
       }
-    })
+    ])
 
-    // Calcular médias e taxa de sucesso
-    if (metasConcluidas > 0) {
-      relatorio.estatisticas.mediaTempoConclusao = Math.round(tempoTotalConclusao / metasConcluidas)
-    }
+    // Análise de performance por categoria
+    const performancePorCategoria = await Goal.aggregate([
+      { $match: { userId: userObjectId, ...filtros } },
+      {
+        $addFields: {
+          porcentagemConcluida: {
+            $multiply: [{ $divide: ['$valorAtual', '$valorAlvo'] }, 100]
+          }
+        }
+      },
+      {
+        $group: {
+          _id: '$categoria',
+          totalMetas: { $sum: 1 },
+          valorTotalAlvo: { $sum: '$valorAlvo' },
+          valorTotalAtual: { $sum: '$valorAtual' },
+          progressoMedio: { $avg: '$porcentagemConcluida' },
+          metasConcluidas: {
+            $sum: { $cond: [{ $eq: ['$status', 'concluida'] }, 1, 0] }
+          },
+          taxaSucesso: {
+            $avg: { $cond: [{ $eq: ['$status', 'concluida'] }, 1, 0] }
+          }
+        }
+      },
+      { $sort: { progressoMedio: -1 } }
+    ])
+
+    // Análise temporal (progresso ao longo do tempo)
+    const progressoTemporal = await Goal.aggregate([
+      { $match: { userId: userObjectId, ...filtros } },
+      { $unwind: '$contribuicoes' },
+      {
+        $group: {
+          _id: {
+            mes: { $month: '$contribuicoes.data' },
+            ano: { $year: '$contribuicoes.data' }
+          },
+          totalContribuicoes: { $sum: '$contribuicoes.valor' },
+          numeroContribuicoes: { $sum: 1 }
+        }
+      },
+      { $sort: { '_id.ano': 1, '_id.mes': 1 } }
+    ])
+
+    // Identificar padrões e insights
+    const insights = []
     
-    relatorio.estatisticas.sucessoRate = metas.length > 0 ? 
-      Math.round((relatorio.estatisticas.concluidas / metas.length) * 100) : 0
+    const stats = estatisticasDetalhadas[0]
+    if (stats) {
+      // Taxa de sucesso
+      const taxaSucesso = (stats.metasConcluidas / stats.totalMetas) * 100
+      insights.push({
+        tipo: 'sucesso',
+        titulo: 'Taxa de Sucesso',
+        valor: `${Math.round(taxaSucesso)}%`,
+        descricao: `${stats.metasConcluidas} de ${stats.totalMetas} metas foram concluídas`
+      })
 
-    // Gerar insights
-    relatorio.insights = gerarInsightsMetas(relatorio)
+      // Progresso geral
+      if (stats.progressoMedio >= 80) {
+        insights.push({
+          tipo: 'positivo',
+          titulo: 'Excelente Progresso',
+          valor: `${Math.round(stats.progressoMedio)}%`,
+          descricao: 'Você está indo muito bem com suas metas!'
+        })
+      } else if (stats.progressoMedio < 30) {
+        insights.push({
+          tipo: 'atencao',
+          titulo: 'Progresso Baixo',
+          valor: `${Math.round(stats.progressoMedio)}%`,
+          descricao: 'Considere revisar suas estratégias ou ajustar os valores das metas'
+        })
+      }
+
+      // Categoria com melhor performance
+      if (performancePorCategoria.length > 0) {
+        const melhorCategoria = performancePorCategoria[0]
+        insights.push({
+          tipo: 'destaque',
+          titulo: 'Categoria Destaque',
+          valor: melhorCategoria._id,
+          descricao: `Melhor performance com ${Math.round(melhorCategoria.progressoMedio)}% de progresso médio`
+        })
+      }
+    }
+
+    const relatorio = {
+      parametros: {
+        dataInicio,
+        dataFim,
+        categoria,
+        status,
+        formato
+      },
+      resumoExecutivo: {
+        totalMetas: metas.length,
+        valorTotalEmMetas: metas.reduce((sum, m) => sum + m.valorAlvo, 0),
+        valorTotalAlcancado: metas.reduce((sum, m) => sum + m.valorAtual, 0),
+        progressoGeral: stats ? Math.round(stats.progressoMedio) : 0,
+        metasConcluidas: metas.filter(m => m.status === 'concluida').length
+      },
+      estatisticasDetalhadas: stats || {},
+      performancePorCategoria,
+      progressoTemporal,
+      metasDetalhadas: metas.map(meta => ({
+        ...meta.toObject(),
+        porcentagemConcluida: Math.round((meta.valorAtual / meta.valorAlvo) * 100),
+        diasRestantes: Math.max(
+          Math.ceil((new Date(meta.dataLimite) - new Date()) / (1000 * 60 * 60 * 24)), 
+          0
+        ),
+        statusDetalhado: {
+          situacao: meta.status,
+          foiConcluida: meta.status === 'concluida',
+          estaNoPrazo: new Date(meta.dataLimite) > new Date(),
+          contribuicoes: meta.contribuicoes?.length || 0
+        }
+      })),
+      insights,
+      recomendacoes: [
+        'Revise metas com baixo progresso mensalmente',
+        'Defina contribuições regulares para manter o momentum',
+        'Celebre as conquistas para manter a motivação',
+        'Ajuste valores ou prazos se necessário para manter as metas realistas'
+      ],
+      geradoEm: new Date()
+    }
+
+    console.log('✅ Relatório detalhado gerado com sucesso')
+
+    if (formato === 'csv') {
+      // Para CSV, retornar dados estruturados para conversão
+      res.setHeader('Content-Type', 'text/csv')
+      res.setHeader('Content-Disposition', 'attachment; filename=relatorio-metas.csv')
+      
+      // Simplificar dados para CSV
+      const dadosCSV = metas.map(meta => ({
+        titulo: meta.titulo,
+        categoria: meta.categoria,
+        status: meta.status,
+        valorAlvo: meta.valorAlvo,
+        valorAtual: meta.valorAtual,
+        progresso: Math.round((meta.valorAtual / meta.valorAlvo) * 100),
+        dataInicio: meta.dataInicio.toISOString().split('T')[0],
+        dataLimite: meta.dataLimite.toISOString().split('T')[0],
+        contribuicoes: meta.contribuicoes?.length || 0
+      }))
+      
+      return res.json({
+        success: true,
+        formato: 'csv',
+        dados: dadosCSV,
+        headers: ['titulo', 'categoria', 'status', 'valorAlvo', 'valorAtual', 'progresso', 'dataInicio', 'dataLimite', 'contribuicoes']
+      })
+    }
 
     res.json({
       success: true,
@@ -631,182 +1171,234 @@ exports.getRelatorio = async (req, res) => {
     })
 
   } catch (err) {
-    console.error('Erro ao gerar relatório:', err)
-    res.status(500).json({ error: 'Erro interno do servidor' })
+    console.error('❌ Erro no relatório das metas:', err)
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor'
+    })
   }
 }
 
-// Funções auxiliares
-function criarMilestonesAutomaticos(valorAlvo) {
-  const milestones = []
-  const percentuais = [25, 50, 75, 90]
-  
-  percentuais.forEach(percentual => {
-    milestones.push({
-      nome: `${percentual}% da meta`,
-      valor: Math.round((valorAlvo * percentual) / 100),
-      alcancado: false
-    })
-  })
-  
-  return milestones
-}
-
-function calcularProgressoPorMes(contribuicoes, dataInicio) {
-  const progresso = {}
-  const inicio = new Date(dataInicio)
-  
-  contribuicoes.forEach(contrib => {
-    const data = new Date(contrib.data)
-    const chave = `${data.getFullYear()}-${String(data.getMonth() + 1).padStart(2, '0')}`
+/**
+ * Obter estatísticas das metas para dashboards
+ */
+exports.getStats = async (req, res) => {
+  try {
+    const { periodo = 'mes', categoria } = req.query
+    const agora = new Date()
     
-    if (!progresso[chave]) {
-      progresso[chave] = {
-        mes: chave,
-        contribuicoes: 0,
-        retiradas: 0,
-        liquido: 0,
-        count: 0
+    // Calcular período
+    let dataInicio = new Date()
+    switch (periodo) {
+      case 'semana':
+        dataInicio = new Date(agora.getTime() - 7 * 24 * 60 * 60 * 1000)
+        break
+      case 'mes':
+        dataInicio = new Date(agora.getFullYear(), agora.getMonth(), 1)
+        break
+      case 'trimestre':
+        dataInicio = new Date(agora.getFullYear(), agora.getMonth() - 3, 1)
+        break
+      case 'ano':
+        dataInicio = new Date(agora.getFullYear(), 0, 1)
+        break
+    }
+
+    const filtros = { 
+      userId: req.userId,
+      dataInicio: { $gte: dataInicio }
+    }
+    
+    if (categoria) filtros.categoria = categoria
+
+    const userObjectId = new mongoose.Types.ObjectId(req.userId)
+
+    const stats = await Goal.aggregate([
+      { $match: { userId: userObjectId, ...filtros } },
+      {
+        $addFields: {
+          porcentagemConcluida: {
+            $multiply: [{ $divide: ['$valorAtual', '$valorAlvo'] }, 100]
+          }
+        }
+      },
+      {
+        $group: {
+          _id: '$status',
+          count: { $sum: 1 },
+          valorTotalAlvo: { $sum: '$valorAlvo' },
+          valorTotalAtual: { $sum: '$valorAtual' },
+          progressoMedio: { $avg: '$porcentagemConcluida' }
+        }
       }
+    ])
+
+    // Estatísticas de contribuições no período
+    const contribuicoesStats = await Goal.aggregate([
+      { $match: { userId: userObjectId, ...filtros } },
+      { $unwind: '$contribuicoes' },
+      {
+        $match: {
+          'contribuicoes.data': { $gte: dataInicio, $lte: agora }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalContribuicoes: { $sum: '$contribuicoes.valor' },
+          numeroContribuicoes: { $sum: 1 },
+          mediaContribuicao: { $avg: '$contribuicoes.valor' }
+        }
+      }
+    ])
+
+    res.json({
+      success: true,
+      data: {
+        periodo,
+        categoria: categoria || 'todas',
+        estatisticasPorStatus: stats,
+        contribuicoes: contribuicoesStats[0] || {
+          totalContribuicoes: 0,
+          numeroContribuicoes: 0,
+          mediaContribuicao: 0
+        },
+        resumo: {
+          totalMetas: stats.reduce((sum, s) => sum + s.count, 0),
+          valorTotalAlvo: stats.reduce((sum, s) => sum + s.valorTotalAlvo, 0),
+          valorTotalAtual: stats.reduce((sum, s) => sum + s.valorTotalAtual, 0),
+          progressoGeral: stats.length > 0 
+            ? stats.reduce((sum, s) => sum + s.progressoMedio, 0) / stats.length 
+            : 0
+        }
+      }
+    })
+
+  } catch (err) {
+    console.error('❌ Erro nas estatísticas das metas:', err)
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor'
+    })
+  }
+}
+
+/**
+ * Atualizar status da meta (ativa, pausada, cancelada)
+ */
+exports.updateStatus = async (req, res) => {
+  try {
+    const { status } = req.body
+
+    if (!['ativa', 'pausada', 'concluida', 'cancelada'].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Status inválido. Use: ativa, pausada, concluida ou cancelada'
+      })
     }
+
+    const meta = await Goal.findOne({
+      _id: req.params.id,
+      userId: req.userId
+    })
+
+    if (!meta) {
+      return res.status(404).json({
+        success: false,
+        error: 'Meta não encontrada'
+      })
+    }
+
+    const statusAnterior = meta.status
+    meta.status = status
     
-    if (contrib.tipo === 'contribuicao') {
-      progresso[chave].contribuicoes += contrib.valor
-      progresso[chave].liquido += contrib.valor
-    } else if (contrib.tipo === 'retirada') {
-      progresso[chave].retiradas += contrib.valor
-      progresso[chave].liquido -= contrib.valor
+    // Definir data de conclusão se aplicável
+    if (status === 'concluida') {
+      meta.dataConclusao = new Date()
+    } else if (status === 'ativa' || status === 'pausada') {
+      meta.dataConclusao = null
     }
+
+    await meta.save()
+
+    console.log(`✅ Status da meta ${meta._id} alterado de ${statusAnterior} para ${status}`)
+
+    res.json({
+      success: true,
+      message: `Meta ${status === 'ativa' ? 'ativada' : status === 'pausada' ? 'pausada' : status === 'concluida' ? 'concluída' : 'cancelada'} com sucesso`,
+      data: {
+        meta,
+        alteracao: {
+          statusAnterior,
+          statusAtual: status,
+          dataAlteracao: new Date()
+        }
+      }
+    })
+
+  } catch (err) {
+    console.error('❌ Erro ao atualizar status da meta:', err)
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor'
+    })
+  }
+}
+
+/**
+ * Duplicar meta existente
+ */
+exports.duplicate = async (req, res) => {
+  try {
+    const metaOriginal = await Goal.findOne({
+      _id: req.params.id,
+      userId: req.userId
+    })
+
+    if (!metaOriginal) {
+      return res.status(404).json({
+        success: false,
+        error: 'Meta não encontrada'
+      })
+    }
+
+    // Criar nova meta baseada na original
+    const { sufixo = ' (Cópia)' } = req.body
     
-    progresso[chave].count++
-  })
-  
-  return Object.values(progresso).sort((a, b) => a.mes.localeCompare(b.mes))
-}
-
-function gerarAlertasMeta(meta, diasRestantes, valorMensalNecessario) {
-  const alertas = []
-  const porcentagem = meta.porcentagemConcluida
-
-  if (meta.estaConcluida) {
-    alertas.push({
-      tipo: 'success',
-      titulo: 'Meta Concluída! 🎉',
-      mensagem: 'Parabéns! Você atingiu sua meta!',
-      valor: meta.valorAtual
+    const novaMeta = new Goal({
+      ...metaOriginal.toObject(),
+      _id: undefined,
+      titulo: metaOriginal.titulo + sufixo,
+      valorAtual: 0,
+      contribuicoes: [],
+      status: 'ativa',
+      dataInicio: new Date(),
+      dataConclusao: null,
+      criadoEm: new Date(),
+      atualizadoEm: new Date()
     })
-  } else if (diasRestantes < 0) {
-    alertas.push({
-      tipo: 'error',
-      titulo: 'Meta Vencida',
-      mensagem: `Esta meta venceu há ${Math.abs(diasRestantes)} dias`,
-      valor: meta.valorRestante
+
+    await novaMeta.save()
+
+    console.log('✅ Meta duplicada:', novaMeta._id)
+
+    res.status(201).json({
+      success: true,
+      message: 'Meta duplicada com sucesso',
+      data: {
+        metaOriginal: {
+          id: metaOriginal._id,
+          titulo: metaOriginal.titulo
+        },
+        novaMeta
+      }
     })
-  } else if (diasRestantes <= 30) {
-    alertas.push({
-      tipo: 'warning',
-      titulo: 'Meta Vencendo',
-      mensagem: `Restam apenas ${diasRestantes} dias para esta meta`,
-      valor: valorMensalNecessario
-    })
-  }
 
-  if (!meta.estaConcluida && valorMensalNecessario > 0) {
-    if (valorMensalNecessario > 10000) {
-      alertas.push({
-        tipo: 'warning',
-        titulo: 'Valor Alto Necessário',
-        mensagem: `Você precisa economizar R$ ${valorMensalNecessario} por mês`,
-        valor: valorMensalNecessario
-      })
-    } else if (diasRestantes <= 7) {
-      const valorDiario = Math.ceil(meta.valorRestante / diasRestantes)
-      alertas.push({
-        tipo: 'info',
-        titulo: 'Sprint Final',
-        mensagem: `Você precisa economizar R$ ${valorDiario} por dia`,
-        valor: valorDiario
-      })
-    }
-  }
-
-  // Verificar milestones próximos
-  const proximoMilestone = meta.milestones.find(m => !m.alcancado && m.valor > meta.valorAtual)
-  if (proximoMilestone) {
-    const faltaPara = proximoMilestone.valor - meta.valorAtual
-    if (faltaPara <= valorMensalNecessario * 0.1) { // Menos de 10% do valor mensal
-      alertas.push({
-        tipo: 'info',
-        titulo: 'Milestone Próximo',
-        mensagem: `Faltam apenas R$ ${faltaPara.toFixed(2)} para "${proximoMilestone.nome}"`,
-        valor: faltaPara
-      })
-    }
-  }
-
-  return alertas
-}
-
-function calcularPerformanceMeta(meta, diasDecorridos, diasRestantes) {
-  const totalDias = diasDecorridos + Math.max(0, diasRestantes)
-  const porcentagemTempo = totalDias > 0 ? (diasDecorridos / totalDias) * 100 : 0
-  const porcentagemConcluida = meta.valorAlvo > 0 ? (meta.valorAtual / meta.valorAlvo) * 100 : 0
-  
-  let performance = 'no_prazo'
-  let score = porcentagemConcluida - porcentagemTempo
-  
-  if (score > 10) {
-    performance = 'adiantada'
-  } else if (score < -10) {
-    performance = 'atrasada'
-  }
-  
-  return {
-    status: performance,
-    score: Math.round(score),
-    porcentagemTempo: Math.round(porcentagemTempo),
-    porcentagemConcluida: Math.round(porcentagemConcluida)
-  }
-}
-
-function gerarInsightsMetas(relatorio) {
-  const insights = []
-  
-  // Insight sobre taxa de sucesso
-  if (relatorio.estatisticas.sucessoRate >= 80) {
-    insights.push({
-      tipo: 'positivo',
-      titulo: 'Excelente Taxa de Sucesso',
-      mensagem: `Você tem uma taxa de sucesso de ${relatorio.estatisticas.sucessoRate}% em suas metas!`
-    })
-  } else if (relatorio.estatisticas.sucessoRate < 50) {
-    insights.push({
-      tipo: 'atencao',
-      titulo: 'Taxa de Sucesso Baixa',
-      mensagem: `Sua taxa de sucesso é de ${relatorio.estatisticas.sucessoRate}%. Considere revisar suas metas.`
+  } catch (err) {
+    console.error('❌ Erro ao duplicar meta:', err)
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor'
     })
   }
-  
-  // Insight sobre metas atrasadas
-  if (relatorio.estatisticas.atrasadas > 0) {
-    insights.push({
-      tipo: 'alerta',
-      titulo: 'Metas em Atraso',
-      mensagem: `Você tem ${relatorio.estatisticas.atrasadas} meta(s) em atraso. Revisite seus prazos.`
-    })
-  }
-  
-  // Insight sobre valor investido
-  const porcentagemInvestida = relatorio.estatisticas.totalAlvo > 0 ? 
-    (relatorio.estatisticas.totalInvestido / relatorio.estatisticas.totalAlvo) * 100 : 0
-  
-  if (porcentagemInvestida >= 90) {
-    insights.push({
-      tipo: 'positivo',
-      titulo: 'Quase Lá!',
-      mensagem: `Você já investiu ${Math.round(porcentagemInvestida)}% do valor total de suas metas!`
-    })
-  }
-  
-  return insights
 }

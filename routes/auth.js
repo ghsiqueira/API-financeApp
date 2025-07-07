@@ -1,63 +1,13 @@
 const express = require('express')
 const router = express.Router()
-const { body } = require('express-validator')
 const authController = require('../controllers/authController')
-
-// Validações
-const registerValidation = [
-  body('nome')
-    .trim()
-    .isLength({ min: 2, max: 50 })
-    .withMessage('Nome deve ter entre 2 e 50 caracteres')
-    .matches(/^[a-zA-ZÀ-ÿ\s]+$/)
-    .withMessage('Nome deve conter apenas letras'),
-  
-  body('email')
-    .isEmail()
-    .withMessage('Email inválido')
-    .normalizeEmail(),
-  
-  body('senha')
-    .isLength({ min: 6 })
-    .withMessage('Senha deve ter pelo menos 6 caracteres')
-    .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/)
-    .withMessage('Senha deve conter pelo menos uma letra minúscula, uma maiúscula e um número')
-]
-
-const loginValidation = [
-  body('email')
-    .isEmail()
-    .withMessage('Email inválido')
-    .normalizeEmail(),
-  
-  body('senha')
-    .notEmpty()
-    .withMessage('Senha é obrigatória')
-]
-
-const forgotPasswordValidation = [
-  body('email')
-    .isEmail()
-    .withMessage('Email inválido')
-    .normalizeEmail()
-]
-
-const resetPasswordValidation = [
-  body('email')
-    .isEmail()
-    .withMessage('Email inválido')
-    .normalizeEmail(),
-  
-  body('codigo')
-    .isLength({ min: 6, max: 6 })
-    .withMessage('Código deve ter 6 dígitos')
-    .isNumeric()
-    .withMessage('Código deve conter apenas números'),
-  
-  body('novaSenha')
-    .isLength({ min: 6 })
-    .withMessage('Nova senha deve ter pelo menos 6 caracteres')
-]
+const authMiddleware = require('../middleware/authMiddleware')
+const {
+  registerValidation,
+  loginValidation,
+  forgotPasswordValidation,
+  resetPasswordValidation
+} = require('../middleware/validation')
 
 /**
  * @swagger
@@ -65,22 +15,21 @@ const resetPasswordValidation = [
  *   schemas:
  *     User:
  *       type: object
- *       required:
- *         - nome
- *         - email
- *         - senha
  *       properties:
+ *         _id:
+ *           type: string
  *         nome:
  *           type: string
- *           description: Nome completo do usuário
  *         email:
  *           type: string
- *           format: email
- *           description: Email único do usuário
- *         senha:
+ *         emailVerificado:
+ *           type: boolean
+ *         configuracoes:
+ *           type: object
+ *         criadoEm:
  *           type: string
- *           minLength: 6
- *           description: Senha do usuário
+ *           format: date-time
+ *     
  *     LoginResponse:
  *       type: object
  *       properties:
@@ -93,12 +42,38 @@ const resetPasswordValidation = [
  *           properties:
  *             token:
  *               type: string
- *               description: JWT token
  *             refreshToken:
  *               type: string
- *               description: Refresh token
  *             user:
  *               $ref: '#/components/schemas/User'
+ *     
+ *     ErrorResponse:
+ *       type: object
+ *       properties:
+ *         error:
+ *           type: string
+ *         detalhes:
+ *           type: array
+ *           items:
+ *             type: object
+ *             properties:
+ *               field:
+ *                 type: string
+ *               message:
+ *                 type: string
+ *   
+ *   securitySchemes:
+ *     bearerAuth:
+ *       type: http
+ *       scheme: bearer
+ *       bearerFormat: JWT
+ */
+
+/**
+ * @swagger
+ * tags:
+ *   name: Auth
+ *   description: Autenticação e autorização
  */
 
 /**
@@ -121,6 +96,8 @@ const resetPasswordValidation = [
  *               nome:
  *                 type: string
  *                 example: João Silva
+ *                 minLength: 2
+ *                 maxLength: 50
  *               email:
  *                 type: string
  *                 format: email
@@ -129,6 +106,7 @@ const resetPasswordValidation = [
  *                 type: string
  *                 minLength: 6
  *                 example: MinhaSenh@123
+ *                 description: Deve conter pelo menos uma letra minúscula, uma maiúscula e um número
  *     responses:
  *       201:
  *         description: Usuário registrado com sucesso
@@ -138,6 +116,10 @@ const resetPasswordValidation = [
  *               $ref: '#/components/schemas/LoginResponse'
  *       400:
  *         description: Dados inválidos ou email já existe
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
  *       500:
  *         description: Erro interno do servidor
  */
@@ -201,11 +183,11 @@ router.post('/login', loginValidation, authController.login)
  *                 example: joao@email.com
  *     responses:
  *       200:
- *         description: Código enviado para o email
+ *         description: Código enviado por email
  *       400:
- *         description: Email inválido
+ *         description: Email não encontrado
  *       500:
- *         description: Erro ao enviar email
+ *         description: Erro interno do servidor
  */
 router.post('/forgot-password', forgotPasswordValidation, authController.forgotPassword)
 
@@ -223,20 +205,22 @@ router.post('/forgot-password', forgotPasswordValidation, authController.forgotP
  *             type: object
  *             required:
  *               - email
- *               - codigo
+ *               - code
  *               - novaSenha
  *             properties:
  *               email:
  *                 type: string
  *                 format: email
  *                 example: joao@email.com
- *               codigo:
+ *               code:
  *                 type: string
  *                 example: "123456"
+ *                 description: Código de 6 dígitos recebido por email
  *               novaSenha:
  *                 type: string
  *                 minLength: 6
  *                 example: NovaSenh@123
+ *                 description: Deve conter pelo menos uma letra minúscula, uma maiúscula e um número
  *     responses:
  *       200:
  *         description: Senha redefinida com sucesso
@@ -270,6 +254,20 @@ router.post('/reset-password', resetPasswordValidation, authController.resetPass
  *     responses:
  *       200:
  *         description: Token renovado com sucesso
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     token:
+ *                       type: string
+ *                     refreshToken:
+ *                       type: string
  *       401:
  *         description: Refresh token inválido
  */
@@ -307,7 +305,37 @@ router.get('/verify-email/:token', authController.verifyEmail)
  *     responses:
  *       200:
  *         description: Logout realizado com sucesso
+ *       401:
+ *         description: Token inválido ou não fornecido
  */
-router.post('/logout', authController.logout)
+router.post('/logout', authMiddleware, authController.logout)
+
+/**
+ * @swagger
+ * /api/auth/validate-token:
+ *   get:
+ *     summary: Validar token atual
+ *     tags: [Auth]
+ *     security:
+ *       - bearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Token válido
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     user:
+ *                       $ref: '#/components/schemas/User'
+ *       401:
+ *         description: Token inválido ou expirado
+ */
+router.get('/validate-token', authMiddleware, authController.validateToken)
 
 module.exports = router

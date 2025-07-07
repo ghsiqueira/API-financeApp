@@ -18,32 +18,48 @@ const generateRefreshToken = () => {
   return crypto.randomBytes(32).toString('hex')
 }
 
+// Gerar código de reset de senha
+const generateResetCode = () => {
+  return Math.floor(100000 + Math.random() * 900000).toString()
+}
+
+/**
+ * Registrar novo usuário
+ */
 exports.register = async (req, res) => {
+  console.log('🚀 POST /auth/register')
+  
   try {
     // Validar dados de entrada
     const errors = validationResult(req)
     if (!errors.isEmpty()) {
+      console.log('❌ Dados inválidos:', errors.array())
       return res.status(400).json({ 
+        success: false,
         error: 'Dados inválidos', 
-        detalhes: errors.array() 
+        detalhes: errors.array().map(err => ({
+          field: err.param,
+          message: err.msg
+        }))
       })
     }
 
     const { nome, email, senha } = req.body
+    console.log('📝 Dados recebidos:', { nome, email, senha: '***' })
 
     // Verificar se email já existe
     const existing = await User.findOne({ email: email.toLowerCase() })
     if (existing) {
-      return res.status(400).json({ error: 'Email já está em uso' })
-    }
-
-    // Validar força da senha
-    if (senha.length < 6) {
-      return res.status(400).json({ error: 'Senha deve ter pelo menos 6 caracteres' })
+      console.log('❌ Email já existe:', email)
+      return res.status(400).json({ 
+        success: false,
+        error: 'Email já está em uso' 
+      })
     }
 
     // Hash da senha
     const senhaHash = await bcrypt.hash(senha, 12)
+    console.log('🔐 Senha hasheada')
 
     // Criar usuário
     const user = await User.create({ 
@@ -51,13 +67,20 @@ exports.register = async (req, res) => {
       email: email.toLowerCase().trim(), 
       senhaHash 
     })
+    console.log('✅ Usuário criado:', user._id)
 
     // Criar categorias padrão para o usuário (async para não travar)
-    Category.criarCategoriasPadrao().catch(console.error)
+    try {
+      await Category.criarCategoriasPadrao(user._id)
+      console.log('✅ Categorias padrão criadas')
+    } catch (err) {
+      console.error('⚠️ Erro ao criar categorias padrão:', err.message)
+    }
 
     // Gerar tokens
     const token = generateToken(user._id)
     const refreshToken = generateRefreshToken()
+    console.log('🎫 Tokens gerados')
 
     // Atualizar último login
     user.ultimoLogin = new Date()
@@ -74,38 +97,62 @@ exports.register = async (req, res) => {
     })
 
   } catch (err) {
-    console.error('Erro no registro:', err)
-    res.status(500).json({ error: 'Erro interno do servidor' })
+    console.error('❌ Erro no registro:', err)
+    res.status(500).json({ 
+      success: false,
+      error: 'Erro interno do servidor' 
+    })
   }
 }
 
+/**
+ * Fazer login
+ */
 exports.login = async (req, res) => {
+  console.log('🚀 POST /auth/login')
+  
   try {
+    // Validar dados de entrada
     const errors = validationResult(req)
     if (!errors.isEmpty()) {
+      console.log('❌ Dados inválidos:', errors.array())
       return res.status(400).json({ 
+        success: false,
         error: 'Dados inválidos', 
-        detalhes: errors.array() 
+        detalhes: errors.array().map(err => ({
+          field: err.param,
+          message: err.msg
+        }))
       })
     }
 
     const { email, senha } = req.body
+    console.log('📝 Tentativa de login:', email)
 
     // Buscar usuário
     const user = await User.findOne({ email: email.toLowerCase() })
     if (!user) {
-      return res.status(400).json({ error: 'Credenciais inválidas' })
+      console.log('❌ Usuário não encontrado:', email)
+      return res.status(400).json({ 
+        success: false,
+        error: 'Credenciais inválidas' 
+      })
     }
 
     // Verificar senha
     const match = await bcrypt.compare(senha, user.senhaHash)
     if (!match) {
-      return res.status(400).json({ error: 'Credenciais inválidas' })
+      console.log('❌ Senha incorreta para:', email)
+      return res.status(400).json({ 
+        success: false,
+        error: 'Credenciais inválidas' 
+      })
     }
 
     // Gerar tokens
     const token = generateToken(user._id)
     const refreshToken = generateRefreshToken()
+    console.log('🎫 Login bem-sucedido:', user._id)
 
     // Atualizar último login
     user.ultimoLogin = new Date()
@@ -122,102 +169,146 @@ exports.login = async (req, res) => {
     })
 
   } catch (err) {
-    console.error('Erro no login:', err)
-    res.status(500).json({ error: 'Erro interno do servidor' })
+    console.error('❌ Erro no login:', err)
+    res.status(500).json({ 
+      success: false,
+      error: 'Erro interno do servidor' 
+    })
   }
 }
 
+/**
+ * Solicitar código de recuperação de senha
+ */
 exports.forgotPassword = async (req, res) => {
+  console.log('🚀 POST /auth/forgot-password')
+  
   try {
-    const { email } = req.body
-
-    if (!email) {
-      return res.status(400).json({ error: 'Email é obrigatório' })
-    }
-
-    const user = await User.findOne({ email: email.toLowerCase() })
-    if (!user) {
-      // Por segurança, sempre retornar sucesso
-      return res.json({ 
-        success: true,
-        message: 'Se o email existir, você receberá o código de recuperação' 
+    const errors = validationResult(req)
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Dados inválidos', 
+        detalhes: errors.array().map(err => ({
+          field: err.param,
+          message: err.msg
+        }))
       })
     }
 
-    // Gerar código de 6 dígitos
-    const codigo = Math.floor(100000 + Math.random() * 900000).toString()
-    
-    // Definir expiração (15 minutos)
-    const expiracao = new Date()
-    expiracao.setMinutes(expiracao.getMinutes() + 15)
+    const { email } = req.body
+    console.log('📧 Solicitação de reset para:', email)
 
-    user.codigoResetSenha = codigo
-    user.resetSenhaExpira = expiracao
+    // Buscar usuário
+    const user = await User.findOne({ email: email.toLowerCase() })
+    if (!user) {
+      console.log('❌ Email não encontrado:', email)
+      return res.status(400).json({ 
+        success: false,
+        error: 'Email não encontrado' 
+      })
+    }
+
+    // Gerar código de reset
+    const resetCode = generateResetCode()
+    const resetExpires = new Date(Date.now() + 10 * 60 * 1000) // 10 minutos
+
+    // Salvar código no usuário
+    user.codigoResetSenha = resetCode
+    user.resetSenhaExpira = resetExpires
     await user.save()
 
     // Enviar email
-    const emailHTML = `
-      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #007AFF;">Código de Recuperação de Senha</h2>
-        <p>Olá ${user.nome},</p>
-        <p>Você solicitou a recuperação de senha para sua conta.</p>
-        <div style="background-color: #f5f5f5; padding: 20px; text-align: center; margin: 20px 0;">
-          <h1 style="color: #007AFF; font-size: 32px; margin: 0;">${codigo}</h1>
-        </div>
-        <p>Este código é válido por <strong>15 minutos</strong>.</p>
-        <p>Se você não solicitou esta recuperação, ignore este email.</p>
-        <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
-        <p style="color: #666; font-size: 12px;">
-          Este é um email automático, não responda.
-        </p>
-      </div>
-    `
-
-    await transporter.sendMail({
-      from: process.env.MAIL_FROM_ADDRESS,
-      to: email,
-      subject: 'Código de Recuperação de Senha - Finance App',
-      html: emailHTML,
-      text: `Seu código de recuperação é: ${codigo}. Válido por 15 minutos.`
-    })
+    try {
+      await transporter.sendMail({
+        from: process.env.MAIL_FROM_ADDRESS,
+        to: user.email,
+        subject: 'Código de Recuperação de Senha - Finance App',
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #1a1a2e;">Recuperação de Senha</h2>
+            <p>Olá, ${user.nome}!</p>
+            <p>Você solicitou a recuperação de sua senha. Use o código abaixo no aplicativo:</p>
+            <div style="background: #f5f5f5; padding: 20px; text-align: center; margin: 20px 0; border-radius: 8px;">
+              <h1 style="color: #1a1a2e; margin: 0; letter-spacing: 4px;">${resetCode}</h1>
+            </div>
+            <p><strong>Este código é válido por 10 minutos.</strong></p>
+            <p>Se você não solicitou esta recuperação, ignore este email.</p>
+            <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
+            <p style="color: #666; font-size: 12px;">Finance App - Seu gestor financeiro pessoal</p>
+          </div>
+        `
+      })
+      console.log('✅ Email de reset enviado para:', email)
+    } catch (emailErr) {
+      console.error('❌ Erro ao enviar email:', emailErr)
+      return res.status(500).json({ 
+        success: false,
+        error: 'Erro ao enviar email' 
+      })
+    }
 
     res.json({ 
       success: true,
-      message: 'Código enviado para o email' 
+      message: 'Código de recuperação enviado por email' 
     })
 
   } catch (err) {
-    console.error('Erro ao enviar email:', err)
-    res.status(500).json({ error: 'Erro ao enviar email de recuperação' })
+    console.error('❌ Erro no forgot password:', err)
+    res.status(500).json({ 
+      success: false,
+      error: 'Erro interno do servidor' 
+    })
   }
 }
 
+/**
+ * Redefinir senha com código
+ */
 exports.resetPassword = async (req, res) => {
+  console.log('🚀 POST /auth/reset-password')
+  
   try {
-    const { email, codigo, novaSenha } = req.body
-
-    if (!email || !codigo || !novaSenha) {
-      return res.status(400).json({ error: 'Todos os campos são obrigatórios' })
+    const errors = validationResult(req)
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Dados inválidos', 
+        detalhes: errors.array().map(err => ({
+          field: err.param,
+          message: err.msg
+        }))
+      })
     }
 
-    if (novaSenha.length < 6) {
-      return res.status(400).json({ error: 'Nova senha deve ter pelo menos 6 caracteres' })
-    }
+    const { email, code, novaSenha } = req.body
+    console.log('🔐 Reset de senha para:', email)
 
+    // Buscar usuário
     const user = await User.findOne({ 
       email: email.toLowerCase(),
-      codigoResetSenha: codigo
+      codigoResetSenha: code,
+      resetSenhaExpira: { $gt: new Date() }
     })
 
-    if (!user || !user.isResetTokenValid()) {
-      return res.status(400).json({ error: 'Código inválido ou expirado' })
+    if (!user) {
+      console.log('❌ Código inválido ou expirado')
+      return res.status(400).json({ 
+        success: false,
+        error: 'Código inválido ou expirado' 
+      })
     }
 
-    // Atualizar senha
-    user.senhaHash = await bcrypt.hash(novaSenha, 12)
+    // Hash da nova senha
+    const senhaHash = await bcrypt.hash(novaSenha, 12)
+
+    // Atualizar senha e limpar código de reset
+    user.senhaHash = senhaHash
     user.codigoResetSenha = null
     user.resetSenhaExpira = null
     await user.save()
+
+    console.log('✅ Senha redefinida para:', email)
 
     res.json({ 
       success: true,
@@ -225,71 +316,132 @@ exports.resetPassword = async (req, res) => {
     })
 
   } catch (err) {
-    console.error('Erro ao redefinir senha:', err)
-    res.status(500).json({ error: 'Erro interno do servidor' })
+    console.error('❌ Erro no reset password:', err)
+    res.status(500).json({ 
+      success: false,
+      error: 'Erro interno do servidor' 
+    })
   }
 }
 
+/**
+ * Renovar token de acesso
+ */
 exports.refreshToken = async (req, res) => {
+  console.log('🚀 POST /auth/refresh-token')
+  
   try {
-    const { refreshToken } = req.body
+    const { refreshToken, userId } = req.body
 
-    if (!refreshToken) {
-      return res.status(401).json({ error: 'Refresh token não fornecido' })
+    if (!refreshToken || !userId) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Refresh token e userId são obrigatórios' 
+      })
     }
 
-    // Aqui você implementaria a lógica de validação do refresh token
-    // Por simplicidade, vamos apenas verificar se o usuário existe
-    const { userId } = req.body
-
+    // Verificar se usuário existe
     const user = await User.findById(userId)
     if (!user) {
-      return res.status(401).json({ error: 'Usuário não encontrado' })
+      return res.status(401).json({ 
+        success: false,
+        error: 'Usuário não encontrado' 
+      })
     }
 
-    // Gerar novo token
-    const token = generateToken(user._id)
+    // Gerar novos tokens
+    const newToken = generateToken(user._id)
     const newRefreshToken = generateRefreshToken()
 
-    res.json({
+    console.log('🎫 Tokens renovados para:', user.email)
+
+    res.json({ 
       success: true,
       data: {
-        token,
+        token: newToken,
         refreshToken: newRefreshToken
       }
     })
 
   } catch (err) {
-    console.error('Erro ao renovar token:', err)
-    res.status(401).json({ error: 'Token inválido' })
+    console.error('❌ Erro no refresh token:', err)
+    res.status(500).json({ 
+      success: false,
+      error: 'Erro interno do servidor' 
+    })
   }
 }
 
+/**
+ * Verificar email do usuário
+ */
 exports.verifyEmail = async (req, res) => {
+  console.log('🚀 GET /auth/verify-email/:token')
+  
   try {
     const { token } = req.params
 
-    // Implementar verificação de email se necessário
+    // Verificar token (implementar lógica conforme necessário)
+    // Por enquanto, apenas um placeholder
+    
     res.json({ 
       success: true,
       message: 'Email verificado com sucesso' 
     })
 
   } catch (err) {
-    console.error('Erro na verificação:', err)
-    res.status(500).json({ error: 'Erro interno do servidor' })
+    console.error('❌ Erro na verificação de email:', err)
+    res.status(500).json({ 
+      success: false,
+      error: 'Erro interno do servidor' 
+    })
   }
 }
 
+/**
+ * Fazer logout
+ */
 exports.logout = async (req, res) => {
+  console.log('🚀 POST /auth/logout')
+  
   try {
     // Aqui você pode implementar blacklist de tokens se necessário
+    console.log('✅ Logout realizado para usuário:', req.userId)
+
     res.json({ 
       success: true,
       message: 'Logout realizado com sucesso' 
     })
+
   } catch (err) {
-    console.error('Erro no logout:', err)
-    res.status(500).json({ error: 'Erro interno do servidor' })
+    console.error('❌ Erro no logout:', err)
+    res.status(500).json({ 
+      success: false,
+      error: 'Erro interno do servidor' 
+    })
+  }
+}
+
+/**
+ * Validar token atual
+ */
+exports.validateToken = async (req, res) => {
+  console.log('🚀 GET /auth/validate-token')
+  
+  try {
+    // O middleware de auth já validou o token e adicionou req.user
+    res.json({ 
+      success: true,
+      data: {
+        user: req.user.toSafeObject()
+      }
+    })
+
+  } catch (err) {
+    console.error('❌ Erro na validação do token:', err)
+    res.status(500).json({ 
+      success: false,
+      error: 'Erro interno do servidor' 
+    })
   }
 }

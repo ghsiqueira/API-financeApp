@@ -80,106 +80,257 @@ categorySchema.pre('save', function(next) {
 })
 
 // Método para adicionar subcategoria
-categorySchema.methods.adicionarSubcategoria = function(nome, icone = null, cor = null) {
-  this.subcategorias.push({
-    nome,
-    icone: icone || this.icone,
-    cor: cor || this.cor,
-    ativa: true
-  })
+categorySchema.methods.adicionarSubcategoria = function(subcategoria) {
+  this.subcategorias.push(subcategoria)
+  return this.save()
+}
+
+// Método para remover subcategoria
+categorySchema.methods.removerSubcategoria = function(subcategoriaId) {
+  this.subcategorias.id(subcategoriaId).remove()
+  return this.save()
 }
 
 // Método para atualizar estatísticas
-categorySchema.methods.atualizarEstatisticas = function(valor, operacao = 'adicionar') {
-  if (operacao === 'adicionar') {
-    this.estatisticas.totalTransacoes += 1
-    this.estatisticas.totalValor += valor
-    this.estatisticas.ultimaTransacao = new Date()
-  } else if (operacao === 'remover') {
-    this.estatisticas.totalTransacoes = Math.max(0, this.estatisticas.totalTransacoes - 1)
-    this.estatisticas.totalValor = Math.max(0, this.estatisticas.totalValor - valor)
+categorySchema.methods.atualizarEstatisticas = async function() {
+  const Transaction = mongoose.model('Transaction')
+  
+  const stats = await Transaction.aggregate([
+    {
+      $match: {
+        categoria: this._id,
+        userId: this.userId
+      }
+    },
+    {
+      $group: {
+        _id: null,
+        totalTransacoes: { $sum: 1 },
+        totalValor: { $sum: '$valor' },
+        ultimaTransacao: { $max: '$data' }
+      }
+    }
+  ])
+
+  if (stats.length > 0) {
+    this.estatisticas = {
+      totalTransacoes: stats[0].totalTransacoes || 0,
+      totalValor: stats[0].totalValor || 0,
+      ultimaTransacao: stats[0].ultimaTransacao
+    }
+  } else {
+    this.estatisticas = {
+      totalTransacoes: 0,
+      totalValor: 0,
+      ultimaTransacao: null
+    }
   }
+
+  return this.save()
 }
 
-// Método estático para criar categorias padrão
-categorySchema.statics.criarCategoriasPadrao = async function() {
+// Método estático para criar categorias padrão para um usuário
+categorySchema.statics.criarCategoriasPadrao = async function(userId) {
   const categoriasPadrao = [
-    // Receitas
-    { nome: 'Salário', tipo: 'receita', icone: 'briefcase', cor: '#34C759' },
-    { nome: 'Freelance', tipo: 'receita', icone: 'laptop', cor: '#007AFF' },
-    { nome: 'Investimentos', tipo: 'receita', icone: 'trending-up', cor: '#FF9500' },
-    { nome: 'Vendas', tipo: 'receita', icone: 'shopping-bag', cor: '#30D158' },
-    { nome: 'Outros', tipo: 'receita', icone: 'plus-circle', cor: '#8E8E93' },
-    
-    // Despesas
-    { nome: 'Alimentação', tipo: 'despesa', icone: 'utensils', cor: '#FF3B30', 
+    // Categorias de Receita
+    {
+      userId,
+      nome: 'Salário',
+      tipo: 'receita',
+      icone: 'briefcase',
+      cor: '#4CAF50',
+      padrao: true,
+      ordem: 1
+    },
+    {
+      userId,
+      nome: 'Freelance',
+      tipo: 'receita',
+      icone: 'laptop',
+      cor: '#2196F3',
+      padrao: true,
+      ordem: 2
+    },
+    {
+      userId,
+      nome: 'Investimentos',
+      tipo: 'receita',
+      icone: 'trending-up',
+      cor: '#FF9800',
+      padrao: true,
+      ordem: 3
+    },
+    {
+      userId,
+      nome: 'Outras Receitas',
+      tipo: 'receita',
+      icone: 'cash',
+      cor: '#9C27B0',
+      padrao: true,
+      ordem: 4
+    },
+
+    // Categorias de Despesa
+    {
+      userId,
+      nome: 'Alimentação',
+      tipo: 'despesa',
+      icone: 'restaurant',
+      cor: '#FF5722',
+      padrao: true,
+      ordem: 5,
       subcategorias: [
-        { nome: 'Supermercado', icone: 'shopping-cart', cor: '#FF3B30' },
-        { nome: 'Restaurantes', icone: 'coffee', cor: '#FF6B35' },
-        { nome: 'Delivery', icone: 'truck', cor: '#FF8C42' }
+        { nome: 'Supermercado', icone: 'storefront', cor: '#FF5722' },
+        { nome: 'Restaurante', icone: 'restaurant', cor: '#FF5722' },
+        { nome: 'Delivery', icone: 'bicycle', cor: '#FF5722' }
       ]
     },
-    { nome: 'Transporte', tipo: 'despesa', icone: 'car', cor: '#007AFF',
+    {
+      userId,
+      nome: 'Transporte',
+      tipo: 'despesa',
+      icone: 'car',
+      cor: '#607D8B',
+      padrao: true,
+      ordem: 6,
       subcategorias: [
-        { nome: 'Combustível', icone: 'zap', cor: '#007AFF' },
-        { nome: 'Transporte Público', icone: 'navigation', cor: '#0051D5' },
-        { nome: 'Uber/99', icone: 'smartphone', cor: '#003D82' }
+        { nome: 'Combustível', icone: 'car', cor: '#607D8B' },
+        { nome: 'Uber/Taxi', icone: 'car-sport', cor: '#607D8B' },
+        { nome: 'Transporte Público', icone: 'bus', cor: '#607D8B' }
       ]
     },
-    { nome: 'Moradia', tipo: 'despesa', icone: 'home', cor: '#5856D6',
+    {
+      userId,
+      nome: 'Moradia',
+      tipo: 'despesa',
+      icone: 'home',
+      cor: '#795548',
+      padrao: true,
+      ordem: 7,
       subcategorias: [
-        { nome: 'Aluguel', icone: 'key', cor: '#5856D6' },
-        { nome: 'Condomínio', icone: 'building', cor: '#4C44D4' },
-        { nome: 'Energia', icone: 'zap', cor: '#AF52DE' }
+        { nome: 'Aluguel', icone: 'home', cor: '#795548' },
+        { nome: 'Condomínio', icone: 'business', cor: '#795548' },
+        { nome: 'Energia', icone: 'flash', cor: '#795548' },
+        { nome: 'Água', icone: 'water', cor: '#795548' },
+        { nome: 'Internet', icone: 'wifi', cor: '#795548' }
       ]
     },
-    { nome: 'Saúde', tipo: 'despesa', icone: 'heart', cor: '#FF2D92',
+    {
+      userId,
+      nome: 'Saúde',
+      tipo: 'despesa',
+      icone: 'medical',
+      cor: '#F44336',
+      padrao: true,
+      ordem: 8,
       subcategorias: [
-        { nome: 'Medicamentos', icone: 'pill', cor: '#FF2D92' },
-        { nome: 'Consultas', icone: 'user-check', cor: '#D70015' },
-        { nome: 'Plano de Saúde', icone: 'shield', cor: '#A2006A' }
+        { nome: 'Consultas', icone: 'person', cor: '#F44336' },
+        { nome: 'Medicamentos', icone: 'medical', cor: '#F44336' },
+        { nome: 'Exames', icone: 'document-text', cor: '#F44336' }
       ]
     },
-    { nome: 'Educação', tipo: 'despesa', icone: 'book', cor: '#FF9500',
+    {
+      userId,
+      nome: 'Educação',
+      tipo: 'despesa',
+      icone: 'school',
+      cor: '#3F51B5',
+      padrao: true,
+      ordem: 9,
       subcategorias: [
-        { nome: 'Cursos', icone: 'graduation-cap', cor: '#FF9500' },
-        { nome: 'Livros', icone: 'book-open', cor: '#FF7A00' },
-        { nome: 'Material', icone: 'edit', cor: '#CC7700' }
+        { nome: 'Cursos', icone: 'school', cor: '#3F51B5' },
+        { nome: 'Livros', icone: 'book', cor: '#3F51B5' },
+        { nome: 'Material', icone: 'pencil', cor: '#3F51B5' }
       ]
     },
-    { nome: 'Lazer', tipo: 'despesa', icone: 'smile', cor: '#30D158',
+    {
+      userId,
+      nome: 'Lazer',
+      tipo: 'despesa',
+      icone: 'game-controller',
+      cor: '#E91E63',
+      padrao: true,
+      ordem: 10,
       subcategorias: [
-        { nome: 'Cinema', icone: 'film', cor: '#30D158' },
-        { nome: 'Viagens', icone: 'map-pin', cor: '#24A96F' },
-        { nome: 'Hobbies', icone: 'music', cor: '#1E8765' }
+        { nome: 'Cinema', icone: 'film', cor: '#E91E63' },
+        { nome: 'Streaming', icone: 'tv', cor: '#E91E63' },
+        { nome: 'Viagens', icone: 'airplane', cor: '#E91E63' }
       ]
+    },
+    {
+      userId,
+      nome: 'Compras',
+      tipo: 'despesa',
+      icone: 'bag',
+      cor: '#FF9800',
+      padrao: true,
+      ordem: 11,
+      subcategorias: [
+        { nome: 'Roupas', icone: 'shirt', cor: '#FF9800' },
+        { nome: 'Eletrônicos', icone: 'phone-portrait', cor: '#FF9800' },
+        { nome: 'Casa', icone: 'home', cor: '#FF9800' }
+      ]
+    },
+    {
+      userId,
+      nome: 'Outros',
+      tipo: 'despesa',
+      icone: 'ellipsis-horizontal',
+      cor: '#9E9E9E',
+      padrao: true,
+      ordem: 12
     }
   ]
-  
-  for (const categoria of categoriasPadrao) {
-    await this.findOneAndUpdate(
-      { nome: categoria.nome, padrao: true },
-      { ...categoria, padrao: true, userId: null },
-      { upsert: true, new: true }
-    )
+
+  try {
+    // Verificar se já existem categorias para este usuário
+    const existentes = await this.countDocuments({ userId })
+    if (existentes > 0) {
+      console.log('⚠️ Usuário já possui categorias, pulando criação das padrão')
+      return
+    }
+
+    // Criar todas as categorias
+    const categoriasCriadas = await this.insertMany(categoriasPadrao)
+    console.log(`✅ ${categoriasCriadas.length} categorias padrão criadas para usuário ${userId}`)
+    
+    return categoriasCriadas
+  } catch (error) {
+    console.error('❌ Erro ao criar categorias padrão:', error)
+    throw error
   }
 }
 
-// Método estático para obter categorias do usuário
-categorySchema.statics.obterCategoriasUsuario = async function(userId, tipo = null) {
-  const filtro = {
+// Método estático para buscar categorias por tipo
+categorySchema.statics.buscarPorTipo = function(userId, tipo) {
+  const query = { 
     $or: [
-      { userId: mongoose.Types.ObjectId(userId) },
-      { padrao: true }
+      { userId },
+      { padrao: true, userId: null }
     ],
     ativa: true
   }
-  
-  if (tipo) {
-    filtro.$or.push({ tipo }, { tipo: 'ambos' })
+
+  if (tipo && tipo !== 'ambos') {
+    query.$and = [
+      { $or: [{ tipo }, { tipo: 'ambos' }] }
+    ]
   }
-  
-  return await this.find(filtro).sort({ ordem: 1, nome: 1 })
+
+  return this.find(query).sort({ ordem: 1, nome: 1 })
+}
+
+// Método estático para buscar categorias populares
+categorySchema.statics.buscarPopulares = function(userId, limite = 5) {
+  return this.find({
+    $or: [
+      { userId },
+      { padrao: true, userId: null }
+    ],
+    ativa: true
+  })
+  .sort({ 'estatisticas.totalTransacoes': -1 })
+  .limit(limite)
 }
 
 module.exports = mongoose.model('Category', categorySchema)

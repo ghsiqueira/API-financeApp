@@ -1,289 +1,401 @@
-require('dotenv').config()
+// server.js - Completo e atualizado
 const express = require('express')
 const mongoose = require('mongoose')
 const cors = require('cors')
-const rateLimit = require('express-rate-limit')
 const helmet = require('helmet')
+const rateLimit = require('express-rate-limit')
+const compression = require('compression')
+const morgan = require('morgan')
+const path = require('path')
+const fs = require('fs')
 
-// Importar chalk de forma compatível
-let chalk
-try {
-  chalk = require('chalk')
-} catch (error) {
-  // Fallback se chalk não estiver disponível
-  chalk = {
-    blue: (text) => `[BLUE] ${text}`,
-    green: (text) => `[GREEN] ${text}`,
-    red: (text) => `[RED] ${text}`,
-    yellow: (text) => `[YELLOW] ${text}`,
-    gray: (text) => `[GRAY] ${text}`,
-    cyan: (text) => `[CYAN] ${text}`,
-    white: (text) => `[WHITE] ${text}`
-  }
-}
-
-const NetworkHelper = require('./utils/networkHelper')
+require('dotenv').config()
 
 const app = express()
+const PORT = process.env.PORT || 5001
 
-// Configuração de CORS mais permissiva para desenvolvimento
-const corsOptions = {
-  origin: function (origin, callback) {
-    // Permitir requests sem origin (mobile apps, Postman, etc.)
-    if (!origin) return callback(null, true)
-    
-    // Em desenvolvimento, permitir qualquer origin local
-    if (process.env.NODE_ENV === 'development') {
-      if (origin.includes('localhost') || 
-          origin.includes('127.0.0.1') || 
-          origin.includes('192.168.') || 
-          origin.includes('10.0.') ||
-          origin.includes('172.')) {
-        return callback(null, true)
-      }
-    }
-    
-    // Em produção, usar apenas origins permitidas
-    const allowedOrigins = [
-      process.env.FRONTEND_URL,
-      'https://your-domain.com'
-    ].filter(Boolean)
-    
-    if (allowedOrigins.includes(origin)) {
-      callback(null, true)
-    } else {
-      callback(new Error('Não permitido pelo CORS'))
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
-}
+// ==========================================
+// MIDDLEWARES GLOBAIS
+// ==========================================
 
-// Middlewares de segurança
 app.use(helmet({
-  crossOriginResourcePolicy: { policy: "cross-origin" }
+  crossOriginEmbedderPolicy: false,
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "https:"],
+    },
+  },
 }))
-app.use(cors(corsOptions))
 
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutos
-  max: process.env.NODE_ENV === 'development' ? 1000 : 100, // Mais permissivo em dev
-  message: { error: 'Muitas tentativas, tente novamente em 15 minutos' },
-  standardHeaders: true,
-  legacyHeaders: false
-})
-app.use('/api/', limiter)
+app.use(cors({
+  origin: process.env.NODE_ENV === 'production' 
+    ? [process.env.FRONTEND_URL, process.env.APP_URL]
+    : ['http://localhost:3000', 'http://localhost:19006', 'exp://192.168.1.100:19000'],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+}))
 
-// Rate limiting para auth (mais rigoroso)
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: process.env.NODE_ENV === 'development' ? 20 : 5,
-  message: { error: 'Muitas tentativas de login, tente novamente em 15 minutos' }
-})
-app.use('/api/auth/login', authLimiter)
-app.use('/api/auth/register', authLimiter)
-
+app.use(compression())
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true, limit: '10mb' }))
 
-// Conexão MongoDB
+if (process.env.NODE_ENV === 'production') {
+  app.use(morgan('combined'))
+} else {
+  app.use(morgan('dev'))
+}
+
+// Rate limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === 'production' ? 100 : 1000,
+  message: { error: 'Muitas tentativas. Tente novamente em 15 minutos.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+})
+app.use('/api/', limiter)
+
+// ==========================================
+// CONEXÃO COM MONGODB
+// ==========================================
+
 mongoose.connect(process.env.MONGO_URI)
-  .then(() => {
-    console.log(chalk.green('✅ MongoDB conectado'))
-  })
-  .catch(err => {
-    console.error(chalk.red('❌ Erro ao conectar MongoDB:'), err)
-    process.exit(1)
-  })
-
-// Middleware para logs detalhados
-app.use((req, res, next) => {
-  const timestamp = new Date().toISOString()
-  const method = req.method
-  const url = req.path
-  const ip = req.ip || req.connection.remoteAddress
+.then(() => {
+  console.log('✅ Conectado ao MongoDB')
   
-  console.log(chalk.gray(`${timestamp} - ${method} ${url} from ${ip}`))
-  next()
+  // Inicializar cron jobs apenas se habilitado
+  if (process.env.ENABLE_CRON_JOBS === 'true') {
+    initializeCronJobs()
+  }
+})
+.catch((err) => {
+  console.error('❌ Erro ao conectar no MongoDB:', err)
+  process.exit(1)
 })
 
-// Rota de health check com informações detalhadas
-app.get('/health', (req, res) => {
-  const healthInfo = {
-    status: 'OK',
-    timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development',
-    mongodb: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-    uptime: process.uptime(),
-    memory: process.memoryUsage(),
-    version: process.version,
-    platform: process.platform
-  }
-  
-  if (process.env.NODE_ENV === 'development') {
-    healthInfo.networkInfo = {
-      availableIPs: NetworkHelper.getLocalIPs(),
-      primaryIP: NetworkHelper.getPrimaryIP()
-    }
-  }
-  
-  res.json(healthInfo)
-})
+// ==========================================
+// FUNÇÃO AUXILIAR
+// ==========================================
 
-// Rota para obter informações de rede (apenas em desenvolvimento)
-if (process.env.NODE_ENV === 'development') {
-  app.get('/network-info', (req, res) => {
-    const port = process.env.PORT || 5000
-    res.json(NetworkHelper.createMobileConfig(port))
-  })
+function routeExists(routePath) {
+  return fs.existsSync(path.join(__dirname, routePath))
 }
 
-// Função para carregar rotas se existirem
-function loadRouteIfExists(routePath, routeName) {
-  const fs = require('fs')
-  const path = require('path')
-  const fullPath = path.join(__dirname, 'routes', `${routeName}.js`)
-  
-  if (fs.existsSync(fullPath)) {
-    try {
-      app.use(routePath, require(`./routes/${routeName}`))
-      console.log(chalk.green(`✅ Rotas ${routeName} carregadas`))
-    } catch (err) {
-      console.error(chalk.red(`❌ Erro ao carregar rotas ${routeName}:`), err.message)
+// ==========================================
+// ROTAS BÁSICAS
+// ==========================================
+
+app.get('/health', async (req, res) => {
+  try {
+    const healthInfo = {
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      environment: process.env.NODE_ENV,
+      database: {
+        status: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+        name: mongoose.connection.name
+      },
+      memory: process.memoryUsage(),
+      version: '1.0.0'
     }
-  } else {
-    console.log(chalk.yellow(`⚠️  Arquivo ./routes/${routeName}.js não encontrado`))
+
+    // Verificar cron jobs se habilitados
+    if (process.env.ENABLE_CRON_JOBS === 'true') {
+      try {
+        const cronManager = require('./scripts/budgetRenewalCron')
+        healthInfo.cronJobs = cronManager.getStatus()
+      } catch (error) {
+        healthInfo.cronJobs = { error: 'Cron jobs não disponíveis' }
+      }
+    }
+
+    res.json(healthInfo)
+  } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      message: error.message,
+      timestamp: new Date().toISOString()
+    })
   }
-}
-
-// Carregar todas as rotas
-const routes = [
-  { path: '/api/auth', name: 'auth' },
-  { path: '/api/user', name: 'user' },
-  { path: '/api/transactions', name: 'transactions' },
-  { path: '/api/budgets', name: 'budgets' },
-  { path: '/api/goals', name: 'goals' },
-  { path: '/api/categories', name: 'categories' },
-  { path: '/api/dashboard', name: 'dashboard' },
-  { path: '/api/reports', name: 'reports' }
-]
-
-routes.forEach(route => {
-  loadRouteIfExists(route.path, route.name)
 })
 
-// Middleware de erro global
-app.use((err, req, res, next) => {
-  console.error(chalk.red('❌ Erro:'), err.stack)
-  
-  const isDevelopment = process.env.NODE_ENV === 'development'
-  
-  res.status(err.status || 500).json({
-    error: isDevelopment ? err.message : 'Erro interno do servidor',
-    ...(isDevelopment && { stack: err.stack })
+app.get('/api', (req, res) => {
+  res.json({
+    name: 'Finance App API',
+    version: '1.0.0',
+    description: 'API para gestão financeira pessoal',
+    endpoints: {
+      auth: '/api/auth',
+      categories: '/api/categories',
+      transactions: '/api/transactions',
+      budgets: '/api/budgets',
+      goals: '/api/goals',
+      budgetRenewal: '/api/budgets/renewal',
+      health: '/health'
+    },
+    features: [
+      'Autenticação JWT',
+      'Gestão de transações',
+      'Orçamentos com renovação automática',
+      'Metas financeiras',
+      'Categorização automática'
+    ]
   })
 })
 
-// Rota 404
+// ==========================================
+// IMPORTAR E USAR ROTAS
+// ==========================================
+
+// Verificar e importar apenas rotas que existem
+if (routeExists('./routes/auth.js')) {
+  const authRoutes = require('./routes/auth')
+  app.use('/api/auth', authRoutes)
+  console.log('✅ Rota auth carregada')
+}
+
+if (routeExists('./routes/categories.js')) {
+  const categoryRoutes = require('./routes/categories')
+  app.use('/api/categories', categoryRoutes)
+  console.log('✅ Rota categories carregada')
+} else {
+  console.log('⚠️ Rota categories não encontrada')
+}
+
+if (routeExists('./routes/transactions.js')) {
+  const transactionRoutes = require('./routes/transactions')
+  app.use('/api/transactions', transactionRoutes)
+  console.log('✅ Rota transactions carregada')
+}
+
+if (routeExists('./routes/budgets.js')) {
+  const budgetRoutes = require('./routes/budgets')
+  app.use('/api/budgets', budgetRoutes)
+  console.log('✅ Rota budgets carregada')
+}
+
+if (routeExists('./routes/goals.js')) {
+  const goalRoutes = require('./routes/goals')
+  app.use('/api/goals', goalRoutes)
+  console.log('✅ Rota goals carregada')
+}
+
+// Rota de renovação automática
+if (routeExists('./routes/budgetRenewal.js')) {
+  const budgetRenewalRoutes = require('./routes/budgetRenewal')
+  app.use('/api/budgets/renewal', budgetRenewalRoutes)
+  console.log('✅ Rota budget renewal carregada')
+}
+
+// ==========================================
+// TESTAR SERVIÇOS
+// ==========================================
+
+// Testar email service
+if (routeExists('./services/emailService.js')) {
+  try {
+    const emailService = require('./services/emailService')
+    if (emailService.testConnection) {
+      emailService.testConnection()
+        .then(() => console.log('✅ Serviço de email funcionando'))
+        .catch(() => console.log('⚠️ Serviço de email com problemas (mas servidor continua)'))
+    }
+  } catch (error) {
+    console.log('⚠️ Erro no serviço de email:', error.message)
+  }
+} else if (routeExists('./config/mailer.js')) {
+  try {
+    const emailService = require('./config/mailer')
+    if (emailService.testConnection) {
+      emailService.testConnection()
+        .then(() => console.log('✅ Serviço de email funcionando'))
+        .catch(() => console.log('⚠️ Serviço de email com problemas'))
+    }
+  } catch (error) {
+    console.log('⚠️ Erro no serviço de email:', error.message)
+  }
+}
+
+// ==========================================
+// SWAGGER (OPCIONAL)
+// ==========================================
+
+if (process.env.ENABLE_SWAGGER === 'true') {
+  try {
+    const swaggerUi = require('swagger-ui-express')
+    const swaggerJsdoc = require('swagger-jsdoc')
+    
+    const swaggerOptions = {
+      definition: {
+        openapi: '3.0.0',
+        info: {
+          title: 'Finance App API',
+          version: '1.0.0',
+          description: 'API para aplicativo de gestão financeira pessoal',
+        },
+        servers: [{
+          url: `http://localhost:${PORT}`,
+          description: 'Desenvolvimento'
+        }],
+      },
+      apis: ['./routes/*.js'],
+    }
+    
+    const swaggerSpec = swaggerJsdoc(swaggerOptions)
+    app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec))
+    console.log('✅ Swagger habilitado')
+  } catch (error) {
+    console.log('⚠️ Erro ao configurar Swagger:', error.message)
+  }
+}
+
+// ==========================================
+// MIDDLEWARE DE ERRO
+// ==========================================
+
 app.use('*', (req, res) => {
-  res.status(404).json({ 
-    error: 'Rota não encontrada',
-    path: req.originalUrl,
-    method: req.method
+  res.status(404).json({
+    success: false,
+    error: 'Endpoint não encontrado',
+    availableEndpoints: {
+      api: '/api',
+      health: '/health',
+      docs: process.env.ENABLE_SWAGGER === 'true' ? '/api-docs' : 'Não disponível'
+    }
   })
 })
 
-const PORT = process.env.PORT || 5000
+app.use((err, req, res, next) => {
+  console.error('❌ Erro não tratado:', err)
 
-// Função para inicializar o servidor
-function startServer() {
-  const server = app.listen(PORT, '0.0.0.0', () => {
-    console.log('\n' + chalk.blue('🚀 SERVIDOR FINANCE APP INICIADO'))
-    console.log(chalk.gray('=' .repeat(60)))
-    console.log(chalk.green(`✅ Porta: ${PORT}`))
-    console.log(chalk.green(`✅ Ambiente: ${process.env.NODE_ENV || 'development'}`))
-    console.log(chalk.green(`✅ MongoDB: ${mongoose.connection.readyState === 1 ? 'Conectado' : 'Desconectado'}`))
-    console.log(chalk.green(`✅ CORS: Configurado para desenvolvimento`))
-    console.log(chalk.green(`✅ Rate Limiting: Ativo`))
-    
-    // Mostrar informações de rede
-    NetworkHelper.displayNetworkInfo(PORT)
-    
-    // URLs úteis
-    console.log('\n' + chalk.blue('🔗 URLs ÚTEIS:'))
-    console.log(chalk.white(`   Health Check: http://localhost:${PORT}/health`))
-    
-    if (process.env.NODE_ENV === 'development') {
-      console.log(chalk.white(`   Network Info: http://localhost:${PORT}/network-info`))
-      console.log(chalk.white(`   API Base: http://localhost:${PORT}/api`))
-      
-      // Monitorar mudanças de rede
-      NetworkHelper.watchNetworkChanges((newIPs) => {
-        console.log(chalk.blue('\n📱 NOVOS IPs DISPONÍVEIS PARA O MOBILE:'))
-        newIPs.forEach(({ ip, type }) => {
-          console.log(chalk.cyan(`   → http://${ip}:${PORT}/api - ${type}`))
-        })
-        console.log(chalk.gray('   O app mobile detectará automaticamente\n'))
-      })
-    }
-    
-    console.log('\n' + chalk.blue('📖 COMO USAR:'))
-    console.log(chalk.gray('   1. Inicie seu app mobile'))
-    console.log(chalk.gray('   2. O app detectará automaticamente o IP'))
-    console.log(chalk.gray('   3. Não precisa mais configurar IPs manualmente!'))
-    
-    console.log('\n' + chalk.gray('=' .repeat(60)) + '\n')
-  })
-
-  // Graceful shutdown
-  process.on('SIGTERM', () => {
-    console.log(chalk.yellow('\n🛑 Recebido SIGTERM, fechando servidor graciosamente...'))
-    server.close(() => {
-      console.log(chalk.green('✅ Servidor HTTP fechado'))
-      mongoose.connection.close(() => {
-        console.log(chalk.green('✅ Conexão MongoDB fechada'))
-        process.exit(0)
-      })
+  if (err.name === 'ValidationError') {
+    const errors = Object.values(err.errors).map(e => e.message)
+    return res.status(400).json({
+      success: false,
+      error: 'Dados inválidos',
+      details: errors
     })
-  })
+  }
 
-  process.on('SIGINT', () => {
-    console.log(chalk.yellow('\n🛑 Recebido SIGINT (Ctrl+C), fechando servidor graciosamente...'))
-    server.close(() => {
-      console.log(chalk.green('✅ Servidor HTTP fechado'))
-      mongoose.connection.close(() => {
-        console.log(chalk.green('✅ Conexão MongoDB fechada'))
-        console.log(chalk.blue('👋 Até logo!'))
-        process.exit(0)
-      })
+  if (err.name === 'CastError') {
+    return res.status(400).json({
+      success: false,
+      error: 'ID inválido'
     })
-  })
+  }
 
-  // Tratamento de erros não capturados
-  process.on('uncaughtException', (error) => {
-    console.error(chalk.red('❌ Erro não capturado:'), error)
-    process.exit(1)
-  })
+  if (err.code === 11000) {
+    const field = Object.keys(err.keyValue)[0]
+    return res.status(400).json({
+      success: false,
+      error: `${field} já está em uso`
+    })
+  }
 
-  process.on('unhandledRejection', (reason, promise) => {
-    console.error(chalk.red('❌ Promise rejeitada não tratada:'), reason)
-    process.exit(1)
+  res.status(err.status || 500).json({
+    success: false,
+    error: process.env.NODE_ENV === 'production' 
+      ? 'Erro interno do servidor' 
+      : err.message,
+    ...(process.env.NODE_ENV !== 'production' && { stack: err.stack })
   })
+})
+
+// ==========================================
+// INICIALIZAÇÃO DOS CRON JOBS
+// ==========================================
+
+async function initializeCronJobs() {
+  try {
+    console.log('🔄 Inicializando sistema de renovação automática...')
+    
+    const cronManager = require('./scripts/budgetRenewalCron')
+    await cronManager.initialize()
+    cronManager.startAll()
+    
+    console.log('✅ Cron jobs de renovação automática iniciados')
+    
+  } catch (error) {
+    console.error('❌ Erro ao inicializar cron jobs:', error)
+  }
 }
 
-// Aguardar conexão do MongoDB antes de iniciar o servidor
-mongoose.connection.once('open', () => {
-  startServer()
+// ==========================================
+// GRACEFUL SHUTDOWN
+// ==========================================
+
+process.on('SIGTERM', gracefulShutdown)
+process.on('SIGINT', gracefulShutdown)
+
+async function gracefulShutdown(signal) {
+  console.log(`\n📡 Recebido sinal ${signal}. Iniciando shutdown graceful...`)
+  
+  try {
+    if (process.env.ENABLE_CRON_JOBS === 'true') {
+      try {
+        const cronManager = require('./scripts/budgetRenewalCron')
+        cronManager.stopAll()
+        console.log('⏹️ Cron jobs parados')
+      } catch (error) {
+        console.error('❌ Erro ao parar cron jobs:', error)
+      }
+    }
+
+    await mongoose.connection.close()
+    console.log('🔌 Conexão MongoDB fechada')
+
+    console.log('👋 Servidor finalizado gracefully')
+    process.exit(0)
+  } catch (error) {
+    console.error('❌ Erro durante shutdown:', error)
+    process.exit(1)
+  }
+}
+
+// ==========================================
+// INICIAR SERVIDOR
+// ==========================================
+
+const server = app.listen(PORT, () => {
+  console.log(`
+🚀 Servidor Finance App rodando!
+┌─────────────────────────────────────────┐
+│  🌍 URL: http://localhost:${PORT}           │
+│  💚 Health: http://localhost:${PORT}/health │
+│  📋 API: http://localhost:${PORT}/api       │${process.env.ENABLE_SWAGGER === 'true' ? `
+│  📚 Docs: http://localhost:${PORT}/api-docs │` : ''}
+│  🔧 Ambiente: ${process.env.NODE_ENV || 'development'}        │
+└─────────────────────────────────────────┘
+
+📋 Status das Rotas:
+${routeExists('./routes/auth.js') ? '✅' : '❌'} Auth
+${routeExists('./routes/categories.js') ? '✅' : '❌'} Categories  
+${routeExists('./routes/transactions.js') ? '✅' : '❌'} Transactions
+${routeExists('./routes/budgets.js') ? '✅' : '❌'} Budgets
+${routeExists('./routes/goals.js') ? '✅' : '❌'} Goals
+${routeExists('./routes/budgetRenewal.js') ? '✅' : '❌'} Budget Renewal
+
+🔧 Funcionalidades:
+${process.env.ENABLE_CRON_JOBS === 'true' ? '✅' : '❌'} Renovação Automática
+${process.env.ENABLE_SWAGGER === 'true' ? '✅' : '❌'} Documentação Swagger
+✅ Rate Limiting
+✅ Compressão GZIP
+✅ Tratamento de Erros
+  `)
 })
 
-mongoose.connection.on('error', (error) => {
-  console.error(chalk.red('❌ Erro de conexão MongoDB:'), error)
-})
-
-mongoose.connection.on('disconnected', () => {
-  console.log(chalk.yellow('⚠️  MongoDB desconectado'))
+server.on('error', (error) => {
+  if (error.code === 'EADDRINUSE') {
+    console.error(`❌ Porta ${PORT} já está em uso`)
+    process.exit(1)
+  } else {
+    console.error('❌ Erro do servidor:', error)
+  }
 })
 
 module.exports = app

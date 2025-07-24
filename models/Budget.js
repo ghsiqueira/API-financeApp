@@ -1,166 +1,241 @@
+// models/Budget.js - Versão atualizada com renovação automática
 const mongoose = require('mongoose')
 
 const budgetSchema = new mongoose.Schema({
-  userId: { 
-    type: mongoose.Schema.Types.ObjectId, 
-    ref: 'User', 
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
     required: true,
     index: true
   },
   nome: {
     type: String,
-    required: [true, 'Nome do orçamento é obrigatório'],
+    required: true,
     trim: true,
-    maxlength: [100, 'Nome não pode ter mais de 100 caracteres']
+    maxlength: 100
   },
   categoria: {
     type: String,
-    required: [true, 'Categoria é obrigatória'],
+    required: true,
     index: true
   },
-  subcategorias: [{
-    type: String,
-    trim: true
-  }],
   valorLimite: {
     type: Number,
-    required: [true, 'Valor limite é obrigatório'],
-    min: [0, 'Valor limite deve ser positivo']
+    required: true,
+    min: 0
   },
   valorGasto: {
     type: Number,
     default: 0,
-    min: [0, 'Valor gasto não pode ser negativo']
+    min: 0
   },
   periodo: {
     type: String,
     enum: ['semanal', 'mensal', 'trimestral', 'semestral', 'anual', 'personalizado'],
-    required: [true, 'Período é obrigatório']
+    required: true,
+    index: true
   },
   dataInicio: {
     type: Date,
-    required: [true, 'Data de início é obrigatória'],
+    required: true,
     index: true
   },
   dataFim: {
     type: Date,
-    required: [true, 'Data de fim é obrigatória'],
+    required: true,
     index: true
-  },
-  renovacaoAutomatica: {
-    type: Boolean,
-    default: false
-  },
-  configuracoes: {
-    alertas: {
-      ativo: { type: Boolean, default: true },
-      porcentagens: [{ type: Number, min: 0, max: 100 }], // Ex: [50, 80, 100]
-      diasAntecedencia: { type: Number, default: 3 }
-    },
-    incluirSubcategorias: { type: Boolean, default: false },
-    rollover: { type: Boolean, default: false } // Levar saldo para próximo período
-  },
-  historico: [{
-    data: { type: Date, default: Date.now },
-    acao: {
-      type: String,
-      enum: ['criado', 'editado', 'renovado', 'alerta_enviado', 'limite_excedido']
-    },
-    valor: Number,
-    observacao: String
-  }],
-  status: {
-    type: String,
-    enum: ['ativo', 'pausado', 'finalizado', 'excedido'],
-    default: 'ativo'
   },
   cor: {
     type: String,
-    default: '#007AFF',
-    match: [/^#[0-9A-F]{6}$/i, 'Cor deve estar em formato hexadecimal']
+    default: '#007AFF'
   },
   icone: {
     type: String,
     default: 'wallet'
   },
-  criadoEm: {
-    type: Date,
-    default: Date.now
+  status: {
+    type: String,
+    enum: ['ativo', 'pausado', 'finalizado', 'excedido'],
+    default: 'ativo',
+    index: true
   },
-  atualizadoEm: {
+  // 🆕 NOVOS CAMPOS PARA RENOVAÇÃO AUTOMÁTICA
+  renovacaoAutomatica: {
+    type: Boolean,
+    default: false,
+    index: true
+  },
+  ultimaRenovacao: {
     type: Date,
-    default: Date.now
+    index: true
+  },
+  configuracoes: {
+    // Configurações de alertas
+    alertas: {
+      ativo: {
+        type: Boolean,
+        default: true
+      },
+      porcentagens: [{
+        type: Number,
+        min: 1,
+        max: 100
+      }],
+      email: {
+        type: Boolean,
+        default: true
+      },
+      push: {
+        type: Boolean,
+        default: true
+      }
+    },
+    // 🆕 Configurações específicas de renovação
+    renovacao: {
+      // Transferir saldo restante para próximo período
+      rollover: {
+        type: Boolean,
+        default: false
+      },
+      // Ajustar limite baseado na média de gastos anteriores
+      ajusteAutomatico: {
+        type: Boolean,
+        default: false
+      },
+      // Percentual de ajuste automático (-20% a +50%)
+      percentualAjuste: {
+        type: Number,
+        min: -20,
+        max: 50,
+        default: 0
+      },
+      // Notificações específicas de renovação
+      notificarRenovacao: {
+        type: Boolean,
+        default: true
+      }
+    }
+  },
+  // Histórico de ações no orçamento
+  historico: [{
+    data: {
+      type: Date,
+      default: Date.now
+    },
+    acao: {
+      type: String,
+      enum: [
+        'criado', 'editado', 'pausado', 'reativado', 
+        'renovado', 'renovado_manual', 'finalizado',
+        'limite_alterado', 'configuracao_alterada',
+        'renovacao_ativada', 'renovacao_desativada'
+      ],
+      required: true
+    },
+    valor: Number, // Valor relacionado à ação (ex: novo limite)
+    observacao: String,
+    usuarioId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    }
+  }],
+  // 🆕 Estatísticas de renovações
+  estatisticasRenovacao: {
+    totalRenovacoes: {
+      type: Number,
+      default: 0
+    },
+    mediaGastosPorPeriodo: {
+      type: Number,
+      default: 0
+    },
+    melhorPerformance: {
+      porcentagem: Number,
+      periodo: Date
+    },
+    piorPerformance: {
+      porcentagem: Number,
+      periodo: Date
+    }
+  },
+  descricao: {
+    type: String,
+    maxlength: 500
   }
 }, {
-  timestamps: true
+  timestamps: true,
+  toJSON: { virtuals: true },
+  toObject: { virtuals: true }
 })
 
-// Índices compostos
-budgetSchema.index({ userId: 1, periodo: 1 })
-budgetSchema.index({ userId: 1, dataInicio: 1, dataFim: 1 })
-budgetSchema.index({ userId: 1, categoria: 1 })
+// Índices compostos para performance
+budgetSchema.index({ userId: 1, status: 1, dataFim: 1 })
+budgetSchema.index({ userId: 1, categoria: 1, dataInicio: 1 })
+budgetSchema.index({ renovacaoAutomatica: 1, dataFim: 1, status: 1 })
+budgetSchema.index({ ultimaRenovacao: 1 })
 
-// Middleware para atualizar atualizadoEm
-budgetSchema.pre('save', function(next) {
-  this.atualizadoEm = Date.now()
-  next()
-})
-
-// Método virtual para calcular porcentagem gasta
+// Virtual para calcular porcentagem gasta
 budgetSchema.virtual('porcentagemGasta').get(function() {
-  if (this.valorLimite === 0) return 0
-  return Math.round((this.valorGasto / this.valorLimite) * 100)
+  return this.valorLimite > 0 ? Math.round((this.valorGasto / this.valorLimite) * 100) : 0
 })
 
-// Método virtual para calcular valor restante
+// Virtual para calcular valor restante
 budgetSchema.virtual('valorRestante').get(function() {
   return Math.max(0, this.valorLimite - this.valorGasto)
 })
 
-// Método virtual para verificar se está ativo
-budgetSchema.virtual('estaAtivo').get(function() {
+// Virtual para calcular dias restantes
+budgetSchema.virtual('diasRestantes').get(function() {
   const agora = new Date()
-  return agora >= this.dataInicio && agora <= this.dataFim && this.status === 'ativo'
+  const diffTime = this.dataFim - agora
+  return Math.max(0, Math.ceil(diffTime / (1000 * 60 * 60 * 24)))
 })
 
-// Método para calcular dias restantes
-budgetSchema.methods.diasRestantes = function() {
+// Virtual para verificar se está vencido
+budgetSchema.virtual('vencido').get(function() {
+  return new Date() > this.dataFim
+})
+
+// Middleware para atualizar status automaticamente
+budgetSchema.pre('save', function(next) {
   const agora = new Date()
-  if (agora > this.dataFim) return 0
-  return Math.ceil((this.dataFim - agora) / (1000 * 60 * 60 * 24))
-}
-
-// Método para verificar se deve enviar alerta
-budgetSchema.methods.deveEnviarAlerta = function() {
-  if (!this.configuracoes.alertas.ativo) return false
   
-  const porcentagem = this.porcentagemGasta
-  return this.configuracoes.alertas.porcentagens.some(p => 
-    porcentagem >= p && !this.historicoContemAlerta(p)
-  )
-}
+  // Atualizar status baseado na data e gastos
+  if (this.valorGasto > this.valorLimite && this.status !== 'pausado') {
+    this.status = 'excedido'
+  } else if (agora > this.dataFim && this.status === 'ativo') {
+    this.status = 'finalizado'
+  }
+  
+  next()
+})
 
-// Método para verificar se já foi enviado alerta para uma porcentagem
-budgetSchema.methods.historicoContemAlerta = function(porcentagem) {
-  return this.historico.some(h => 
-    h.acao === 'alerta_enviado' && h.valor === porcentagem
-  )
-}
-
-// Método para adicionar ao histórico
-budgetSchema.methods.adicionarHistorico = function(acao, valor = null, observacao = null) {
-  this.historico.push({
-    data: new Date(),
-    acao,
-    valor,
-    observacao
-  })
-}
-
-// Método para renovar orçamento
+// 🆕 MÉTODO RENOVAR MELHORADO
 budgetSchema.methods.renovar = function() {
-  if (!this.renovacaoAutomatica) return false
+  if (!this.renovacaoAutomatica) {
+    console.log(`Orçamento ${this.nome} não tem renovação automática ativada`)
+    return false
+  }
   
+  // Verificar se é um período válido para renovação
+  const periodosValidos = ['semanal', 'mensal', 'trimestral', 'semestral', 'anual']
+  if (!periodosValidos.includes(this.periodo)) {
+    console.log(`Período ${this.periodo} não é válido para renovação automática`)
+    return false
+  }
+
+  // Salvar estatísticas do período atual
+  const estatisticasAtual = {
+    valorGasto: this.valorGasto,
+    valorLimite: this.valorLimite,
+    porcentagemGasta: this.porcentagemGasta,
+    periodo: {
+      inicio: this.dataInicio,
+      fim: this.dataFim
+    }
+  }
+
+  // Calcular novas datas
   const novaDataInicio = new Date(this.dataFim)
   novaDataInicio.setDate(novaDataInicio.getDate() + 1)
   
@@ -184,44 +259,244 @@ budgetSchema.methods.renovar = function() {
       break
   }
   
-  this.dataInicio = novaDataInicio
-  this.dataFim = novaDataFim
+  // Aplicar configurações especiais de renovação
+  let novoLimite = this.valorLimite
   
-  // Rollover do saldo se configurado
-  if (this.configuracoes.rollover && this.valorRestante > 0) {
-    this.valorLimite += this.valorRestante
+  // 🆕 Rollover: transferir saldo restante
+  if (this.configuracoes?.renovacao?.rollover && this.valorRestante > 0) {
+    novoLimite += this.valorRestante
+    console.log(`Rollover aplicado: +R$ ${this.valorRestante.toFixed(2)}`)
   }
   
+  // 🆕 Ajuste automático baseado no histórico
+  if (this.configuracoes?.renovacao?.ajusteAutomatico) {
+    const ajuste = this.calcularAjusteAutomatico()
+    novoLimite = Math.max(novoLimite * (1 + ajuste), 0)
+    console.log(`Ajuste automático aplicado: ${(ajuste * 100).toFixed(1)}%`)
+  }
+
+  // Atualizar dados do orçamento
+  this.dataInicio = novaDataInicio
+  this.dataFim = novaDataFim
+  this.valorLimite = novoLimite
   this.valorGasto = 0
   this.status = 'ativo'
-  this.adicionarHistorico('renovado', this.valorLimite)
   
+  // 🆕 Atualizar estatísticas de renovação
+  this.estatisticasRenovacao.totalRenovacoes += 1
+  this.atualizarEstatisticasRenovacao(estatisticasAtual)
+  
+  // Adicionar ao histórico
+  this.adicionarHistorico('renovado', novoLimite, 
+    `Renovação automática para período ${novaDataInicio.toLocaleDateString()} - ${novaDataFim.toLocaleDateString()}`)
+  
+  console.log(`✅ Orçamento ${this.nome} renovado com sucesso`)
   return true
 }
 
-// Método estático para estatísticas
+// 🆕 Método para calcular ajuste automático
+budgetSchema.methods.calcularAjusteAutomatico = function() {
+  // Buscar histórico dos últimos 3 períodos
+  const ultimasRenovacoes = this.historico
+    .filter(h => h.acao === 'renovado')
+    .slice(-3)
+  
+  if (ultimasRenovacoes.length < 2) {
+    return 0 // Não há dados suficientes
+  }
+
+  // Calcular média de gastos dos últimos períodos
+  const mediaGastos = this.estatisticasRenovacao.mediaGastosPorPeriodo || this.valorGasto
+  
+  if (mediaGastos === 0) return 0
+
+  // Calcular ajuste baseado na diferença entre média e limite atual
+  const diferencaPercentual = (mediaGastos - this.valorLimite) / this.valorLimite
+  
+  // Limitar ajuste entre -20% e +50%
+  const percentualAjuste = this.configuracoes?.renovacao?.percentualAjuste || 0
+  const ajusteCalculado = Math.max(-0.2, Math.min(0.5, diferencaPercentual * 0.5))
+  
+  return ajusteCalculado + (percentualAjuste / 100)
+}
+
+// 🆕 Método para atualizar estatísticas de renovação
+budgetSchema.methods.atualizarEstatisticasRenovacao = function(estatisticasAtual) {
+  const stats = this.estatisticasRenovacao
+  
+  // Atualizar média de gastos
+  const totalPeriodos = stats.totalRenovacoes || 1
+  stats.mediaGastosPorPeriodo = (
+    (stats.mediaGastosPorPeriodo * (totalPeriodos - 1)) + estatisticasAtual.valorGasto
+  ) / totalPeriodos
+  
+  // Atualizar melhor performance
+  if (!stats.melhorPerformance || estatisticasAtual.porcentagemGasta < stats.melhorPerformance.porcentagem) {
+    stats.melhorPerformance = {
+      porcentagem: estatisticasAtual.porcentagemGasta,
+      periodo: estatisticasAtual.periodo.fim
+    }
+  }
+  
+  // Atualizar pior performance
+  if (!stats.piorPerformance || estatisticasAtual.porcentagemGasta > stats.piorPerformance.porcentagem) {
+    stats.piorPerformance = {
+      porcentagem: estatisticasAtual.porcentagemGasta,
+      periodo: estatisticasAtual.periodo.fim
+    }
+  }
+}
+
+// Método para adicionar ao histórico
+budgetSchema.methods.adicionarHistorico = function(acao, valor = null, observacao = null, usuarioId = null) {
+  this.historico.push({
+    data: new Date(),
+    acao,
+    valor,
+    observacao,
+    usuarioId: usuarioId || this.userId
+  })
+}
+
+// 🆕 Método para verificar se precisa renovar
+budgetSchema.methods.precisaRenovar = function() {
+  const agora = new Date()
+  return this.renovacaoAutomatica && 
+         this.dataFim < agora && 
+         this.status === 'ativo' &&
+         (!this.ultimaRenovacao || 
+          this.ultimaRenovacao < new Date(agora.getTime() - 24 * 60 * 60 * 1000))
+}
+
+// 🆕 Método para obter próxima data de renovação
+budgetSchema.methods.proximaRenovacao = function() {
+  if (!this.renovacaoAutomatica) return null
+  
+  const proximaData = new Date(this.dataFim)
+  proximaData.setDate(proximaData.getDate() + 1)
+  
+  return proximaData
+}
+
+// Método estático para estatísticas gerais
 budgetSchema.statics.getResumo = async function(userId) {
   const agora = new Date()
   
   return await this.aggregate([
     {
       $match: {
-        userId: mongoose.Types.ObjectId(userId),
-        dataInicio: { $lte: agora },
-        dataFim: { $gte: agora }
+        userId: mongoose.Types.ObjectId(userId)
       }
     },
     {
       $group: {
         _id: null,
         totalOrcamentos: { $sum: 1 },
-        totalLimite: { $sum: '$valorLimite' },
-        totalGasto: { $sum: '$valorGasto' },
+        orcamentosAtivos: {
+          $sum: {
+            $cond: [
+              { 
+                $and: [
+                  { $eq: ['$status', 'ativo'] },
+                  { $lte: ['$dataInicio', agora] },
+                  { $gte: ['$dataFim', agora] }
+                ]
+              }, 
+              1, 
+              0
+            ]
+          }
+        },
+        totalLimite: { 
+          $sum: {
+            $cond: [
+              { 
+                $and: [
+                  { $eq: ['$status', 'ativo'] },
+                  { $lte: ['$dataInicio', agora] },
+                  { $gte: ['$dataFim', agora] }
+                ]
+              },
+              '$valorLimite',
+              0
+            ]
+          }
+        },
+        totalGasto: { 
+          $sum: {
+            $cond: [
+              { 
+                $and: [
+                  { $eq: ['$status', 'ativo'] },
+                  { $lte: ['$dataInicio', agora] },
+                  { $gte: ['$dataFim', agora] }
+                ]
+              },
+              '$valorGasto',
+              0
+            ]
+          }
+        },
         orcamentosExcedidos: {
           $sum: {
-            $cond: [{ $gt: ['$valorGasto', '$valorLimite'] }, 1, 0]
+            $cond: [
+              { 
+                $and: [
+                  { $gt: ['$valorGasto', '$valorLimite'] },
+                  { $eq: ['$status', 'ativo'] }
+                ]
+              }, 
+              1, 
+              0
+            ]
+          }
+        },
+        comRenovacaoAutomatica: {
+          $sum: {
+            $cond: [{ $eq: ['$renovacaoAutomatica', true] }, 1, 0]
           }
         }
+      }
+    }
+  ])
+}
+
+// 🆕 Método estático para buscar orçamentos que precisam renovar
+budgetSchema.statics.buscarParaRenovacao = async function() {
+  const agora = new Date()
+  const ontemAgora = new Date(agora.getTime() - 24 * 60 * 60 * 1000)
+  
+  return await this.find({
+    renovacaoAutomatica: true,
+    dataFim: { $lt: agora },
+    status: { $in: ['ativo', 'excedido'] },
+    $or: [
+      { ultimaRenovacao: { $exists: false } },
+      { ultimaRenovacao: { $lt: ontemAgora } }
+    ]
+  }).populate('userId', 'nome email configuracoes')
+}
+
+// 🆕 Método estático para estatísticas de renovação
+budgetSchema.statics.estatisticasRenovacao = async function(userId) {
+  const agora = new Date()
+  const trintaDiasAtras = new Date(agora.getTime() - 30 * 24 * 60 * 60 * 1000)
+  
+  return await this.aggregate([
+    {
+      $match: {
+        userId: mongoose.Types.ObjectId(userId),
+        ultimaRenovacao: { $gte: trintaDiasAtras }
+      }
+    },
+    {
+      $group: {
+        _id: null,
+        totalRenovacoes: { $sum: '$estatisticasRenovacao.totalRenovacoes' },
+        mediaGastos: { $avg: '$estatisticasRenovacao.mediaGastosPorPeriodo' },
+        melhorPerformance: { $min: '$estatisticasRenovacao.melhorPerformance.porcentagem' },
+        piorPerformance: { $max: '$estatisticasRenovacao.piorPerformance.porcentagem' },
+        orcamentosComRenovacao: { $sum: 1 }
       }
     }
   ])

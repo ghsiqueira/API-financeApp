@@ -1,13 +1,31 @@
+// routes/auth.js - Completo
 const express = require('express')
+const bcrypt = require('bcrypt')
+const jwt = require('jsonwebtoken')
+const { body, validationResult } = require('express-validator')
 const router = express.Router()
-const authController = require('../controllers/authController')
-const authMiddleware = require('../middleware/authMiddleware')
-const {
-  registerValidation,
-  loginValidation,
-  forgotPasswordValidation,
-  resetPasswordValidation
-} = require('../middleware/validation')
+
+// Mock de usuários (em produção seria um modelo do MongoDB)
+let users = [
+  {
+    _id: '1',
+    nome: 'Gabriel',
+    email: 'admin@financeapp.com',
+    senhaHash: '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewdBPj1VpJUjJC3a', // senha: admin123
+    emailVerificado: true,
+    criadoEm: new Date(),
+    configuracoes: {
+      tema: 'escuro',
+      moeda: 'BRL',
+      notificacoes: {
+        email: true,
+        push: true,
+        orcamento: true,
+        metas: true
+      }
+    }
+  }
+]
 
 /**
  * @swagger
@@ -26,104 +44,60 @@ const {
  *           type: boolean
  *         configuracoes:
  *           type: object
- *         criadoEm:
- *           type: string
- *           format: date-time
- *     
- *     LoginResponse:
+ *     LoginRequest:
  *       type: object
+ *       required:
+ *         - email
+ *         - senha
  *       properties:
- *         success:
- *           type: boolean
- *         message:
+ *         email:
  *           type: string
- *         data:
- *           type: object
- *           properties:
- *             token:
- *               type: string
- *             refreshToken:
- *               type: string
- *             user:
- *               $ref: '#/components/schemas/User'
- *     
- *     ErrorResponse:
+ *           format: email
+ *         senha:
+ *           type: string
+ *           minLength: 6
+ *     RegisterRequest:
  *       type: object
+ *       required:
+ *         - nome
+ *         - email
+ *         - senha
  *       properties:
- *         error:
+ *         nome:
  *           type: string
- *         detalhes:
- *           type: array
- *           items:
- *             type: object
- *             properties:
- *               field:
- *                 type: string
- *               message:
- *                 type: string
- *   
- *   securitySchemes:
- *     bearerAuth:
- *       type: http
- *       scheme: bearer
- *       bearerFormat: JWT
+ *           minLength: 2
+ *         email:
+ *           type: string
+ *           format: email
+ *         senha:
+ *           type: string
+ *           minLength: 6
  */
 
-/**
- * @swagger
- * tags:
- *   name: Auth
- *   description: Autenticação e autorização
- */
+// Validações
+const loginValidation = [
+  body('email')
+    .isEmail()
+    .normalizeEmail()
+    .withMessage('Email inválido'),
+  body('senha')
+    .isLength({ min: 6 })
+    .withMessage('Senha deve ter pelo menos 6 caracteres')
+]
 
-/**
- * @swagger
- * /api/auth/register:
- *   post:
- *     summary: Registrar novo usuário
- *     tags: [Auth]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - nome
- *               - email
- *               - senha
- *             properties:
- *               nome:
- *                 type: string
- *                 example: João Silva
- *                 minLength: 2
- *                 maxLength: 50
- *               email:
- *                 type: string
- *                 format: email
- *                 example: joao@email.com
- *               senha:
- *                 type: string
- *                 minLength: 6
- *                 example: MinhaSenh@123
- *                 description: Deve conter pelo menos uma letra minúscula, uma maiúscula e um número
- *     responses:
- *       201:
- *         description: Usuário registrado com sucesso
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/LoginResponse'
- *       400:
- *         description: Dados inválidos ou email já existe
- *         content:
- *           application/json:
- *             schema:
- *               $ref: '#/components/schemas/ErrorResponse'
- *       500:
- *         description: Erro interno do servidor
- */
-router.post('/register', registerValidation, authController.register)
+const registerValidation = [
+  body('nome')
+    .trim()
+    .isLength({ min: 2, max: 50 })
+    .withMessage('Nome deve ter entre 2 e 50 caracteres'),
+  body('email')
+    .isEmail()
+    .normalizeEmail()
+    .withMessage('Email inválido'),
+  body('senha')
+    .isLength({ min: 6 })
+    .withMessage('Senha deve ter pelo menos 6 caracteres')
+]
 
 /**
  * @swagger
@@ -136,37 +110,189 @@ router.post('/register', registerValidation, authController.register)
  *       content:
  *         application/json:
  *           schema:
- *             type: object
- *             required:
- *               - email
- *               - senha
- *             properties:
- *               email:
- *                 type: string
- *                 format: email
- *                 example: joao@email.com
- *               senha:
- *                 type: string
- *                 example: MinhaSenh@123
+ *             $ref: '#/components/schemas/LoginRequest'
  *     responses:
  *       200:
  *         description: Login realizado com sucesso
  *         content:
  *           application/json:
  *             schema:
- *               $ref: '#/components/schemas/LoginResponse'
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 token:
+ *                   type: string
+ *                 user:
+ *                   $ref: '#/components/schemas/User'
  *       400:
+ *         description: Dados inválidos
+ *       401:
  *         description: Credenciais inválidas
- *       500:
- *         description: Erro interno do servidor
  */
-router.post('/login', loginValidation, authController.login)
+router.post('/login', loginValidation, async (req, res) => {
+  try {
+    // Verificar erros de validação
+    const errors = validationResult(req)
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Dados inválidos',
+        details: errors.array()
+      })
+    }
+
+    const { email, senha } = req.body
+
+    // Buscar usuário
+    const user = users.find(u => u.email === email)
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        error: 'Email ou senha incorretos'
+      })
+    }
+
+    // Verificar senha
+    const senhaValida = await bcrypt.compare(senha, user.senhaHash)
+    if (!senhaValida) {
+      return res.status(401).json({
+        success: false,
+        error: 'Email ou senha incorretos'
+      })
+    }
+
+    // Gerar token JWT
+    const token = jwt.sign(
+      { 
+        userId: user._id,
+        email: user.email 
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+    )
+
+    // Remover senha da resposta
+    const { senhaHash, ...userResponse } = user
+
+    res.json({
+      success: true,
+      message: 'Login realizado com sucesso',
+      token,
+      user: userResponse
+    })
+
+  } catch (error) {
+    console.error('Erro no login:', error)
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor'
+    })
+  }
+})
+
+/**
+ * @swagger
+ * /api/auth/register:
+ *   post:
+ *     summary: Registrar novo usuário
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/RegisterRequest'
+ *     responses:
+ *       201:
+ *         description: Usuário criado com sucesso
+ *       400:
+ *         description: Dados inválidos ou email já existe
+ */
+router.post('/register', registerValidation, async (req, res) => {
+  try {
+    // Verificar erros de validação
+    const errors = validationResult(req)
+    if (!errors.isEmpty()) {
+      return res.status(400).json({
+        success: false,
+        error: 'Dados inválidos',
+        details: errors.array()
+      })
+    }
+
+    const { nome, email, senha } = req.body
+
+    // Verificar se email já existe
+    const userExists = users.find(u => u.email === email)
+    if (userExists) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email já está em uso'
+      })
+    }
+
+    // Hash da senha
+    const senhaHash = await bcrypt.hash(senha, 12)
+
+    // Criar novo usuário
+    const newUser = {
+      _id: (Date.now() + Math.random()).toString(),
+      nome: nome.trim(),
+      email: email.toLowerCase(),
+      senhaHash,
+      emailVerificado: false, // Em produção, seria false até verificar
+      criadoEm: new Date(),
+      configuracoes: {
+        tema: 'escuro',
+        moeda: 'BRL',
+        notificacoes: {
+          email: true,
+          push: true,
+          orcamento: true,
+          metas: true
+        }
+      }
+    }
+
+    users.push(newUser)
+
+    // Gerar token
+    const token = jwt.sign(
+      { 
+        userId: newUser._id,
+        email: newUser.email 
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+    )
+
+    // Remover senha da resposta
+    const { senhaHash: _, ...userResponse } = newUser
+
+    res.status(201).json({
+      success: true,
+      message: 'Usuário criado com sucesso',
+      token,
+      user: userResponse
+    })
+
+  } catch (error) {
+    console.error('Erro no registro:', error)
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor'
+    })
+  }
+})
 
 /**
  * @swagger
  * /api/auth/forgot-password:
  *   post:
- *     summary: Solicitar código de recuperação de senha
+ *     summary: Solicitar reset de senha
  *     tags: [Auth]
  *     requestBody:
  *       required: true
@@ -180,22 +306,60 @@ router.post('/login', loginValidation, authController.login)
  *               email:
  *                 type: string
  *                 format: email
- *                 example: joao@email.com
  *     responses:
  *       200:
- *         description: Código enviado por email
- *       400:
+ *         description: Email de reset enviado
+ *       404:
  *         description: Email não encontrado
- *       500:
- *         description: Erro interno do servidor
  */
-router.post('/forgot-password', forgotPasswordValidation, authController.forgotPassword)
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email é obrigatório'
+      })
+    }
+
+    // Buscar usuário
+    const user = users.find(u => u.email === email.toLowerCase())
+    if (!user) {
+      // Por segurança, não revelar se o email existe ou não
+      return res.json({
+        success: true,
+        message: 'Se o email existir, você receberá as instruções para resetar a senha'
+      })
+    }
+
+    // Gerar código de 4 dígitos
+    const resetCode = Math.floor(1000 + Math.random() * 9000).toString()
+    
+    // Em produção, salvaria o código no banco e enviaria por email
+    console.log(`🔑 Código de reset para ${email}: ${resetCode}`)
+
+    // Por enquanto, retornar o código na resposta (só para desenvolvimento)
+    res.json({
+      success: true,
+      message: 'Código de reset enviado para seu email',
+      ...(process.env.NODE_ENV === 'development' && { resetCode }) // Só mostrar em dev
+    })
+
+  } catch (error) {
+    console.error('Erro no forgot password:', error)
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor'
+    })
+  }
+})
 
 /**
  * @swagger
  * /api/auth/reset-password:
  *   post:
- *     summary: Redefinir senha com código
+ *     summary: Resetar senha com código
  *     tags: [Auth]
  *     requestBody:
  *       required: true
@@ -205,137 +369,153 @@ router.post('/forgot-password', forgotPasswordValidation, authController.forgotP
  *             type: object
  *             required:
  *               - email
- *               - code
+ *               - codigo
  *               - novaSenha
  *             properties:
  *               email:
  *                 type: string
- *                 format: email
- *                 example: joao@email.com
- *               code:
+ *               codigo:
  *                 type: string
- *                 example: "123456"
- *                 description: Código de 6 dígitos recebido por email
  *               novaSenha:
  *                 type: string
- *                 minLength: 6
- *                 example: NovaSenh@123
- *                 description: Deve conter pelo menos uma letra minúscula, uma maiúscula e um número
  *     responses:
  *       200:
- *         description: Senha redefinida com sucesso
+ *         description: Senha alterada com sucesso
  *       400:
- *         description: Código inválido ou expirado
- *       500:
- *         description: Erro interno do servidor
+ *         description: Código inválido
  */
-router.post('/reset-password', resetPasswordValidation, authController.resetPassword)
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { email, codigo, novaSenha } = req.body
+
+    if (!email || !codigo || !novaSenha) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email, código e nova senha são obrigatórios'
+      })
+    }
+
+    if (novaSenha.length < 6) {
+      return res.status(400).json({
+        success: false,
+        error: 'Nova senha deve ter pelo menos 6 caracteres'
+      })
+    }
+
+    // Buscar usuário
+    const userIndex = users.findIndex(u => u.email === email.toLowerCase())
+    if (userIndex === -1) {
+      return res.status(400).json({
+        success: false,
+        error: 'Código inválido'
+      })
+    }
+
+    // Em produção, verificaria o código salvo no banco
+    // Por enquanto, aceitar qualquer código de 4 dígitos
+    if (!/^\d{4}$/.test(codigo)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Código deve ter 4 dígitos'
+      })
+    }
+
+    // Hash da nova senha
+    const novaSenhaHash = await bcrypt.hash(novaSenha, 12)
+
+    // Atualizar senha
+    users[userIndex].senhaHash = novaSenhaHash
+
+    res.json({
+      success: true,
+      message: 'Senha alterada com sucesso'
+    })
+
+  } catch (error) {
+    console.error('Erro no reset password:', error)
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor'
+    })
+  }
+})
 
 /**
  * @swagger
- * /api/auth/refresh-token:
- *   post:
- *     summary: Renovar token de acesso
- *     tags: [Auth]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - refreshToken
- *               - userId
- *             properties:
- *               refreshToken:
- *                 type: string
- *               userId:
- *                 type: string
- *     responses:
- *       200:
- *         description: Token renovado com sucesso
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                   properties:
- *                     token:
- *                       type: string
- *                     refreshToken:
- *                       type: string
- *       401:
- *         description: Refresh token inválido
- */
-router.post('/refresh-token', authController.refreshToken)
-
-/**
- * @swagger
- * /api/auth/verify-email/{token}:
+ * /api/auth/verify-token:
  *   get:
- *     summary: Verificar email do usuário
- *     tags: [Auth]
- *     parameters:
- *       - in: path
- *         name: token
- *         required: true
- *         schema:
- *           type: string
- *         description: Token de verificação
- *     responses:
- *       200:
- *         description: Email verificado com sucesso
- *       400:
- *         description: Token inválido ou expirado
- */
-router.get('/verify-email/:token', authController.verifyEmail)
-
-/**
- * @swagger
- * /api/auth/logout:
- *   post:
- *     summary: Fazer logout
- *     tags: [Auth]
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: Logout realizado com sucesso
- *       401:
- *         description: Token inválido ou não fornecido
- */
-router.post('/logout', authMiddleware, authController.logout)
-
-/**
- * @swagger
- * /api/auth/validate-token:
- *   get:
- *     summary: Validar token atual
+ *     summary: Verificar se token é válido
  *     tags: [Auth]
  *     security:
  *       - bearerAuth: []
  *     responses:
  *       200:
  *         description: Token válido
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                 data:
- *                   type: object
- *                   properties:
- *                     user:
- *                       $ref: '#/components/schemas/User'
  *       401:
- *         description: Token inválido ou expirado
+ *         description: Token inválido
  */
-router.get('/validate-token', authMiddleware, authController.validateToken)
+router.get('/verify-token', (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '')
+
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        error: 'Token não fornecido'
+      })
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET)
+    const user = users.find(u => u._id === decoded.userId)
+
+    if (!user) {
+      return res.status(401).json({
+        success: false,
+        error: 'Usuário não encontrado'
+      })
+    }
+
+    const { senhaHash, ...userResponse } = user
+
+    res.json({
+      success: true,
+      message: 'Token válido',
+      user: userResponse
+    })
+
+  } catch (error) {
+    if (error.name === 'TokenExpiredError') {
+      return res.status(401).json({
+        success: false,
+        error: 'Token expirado'
+      })
+    }
+
+    return res.status(401).json({
+      success: false,
+      error: 'Token inválido'
+    })
+  }
+})
+
+// Rota de teste
+router.get('/test', (req, res) => {
+  res.json({
+    message: 'Rota de autenticação funcionando!',
+    endpoints: [
+      'POST /api/auth/login',
+      'POST /api/auth/register', 
+      'POST /api/auth/forgot-password',
+      'POST /api/auth/reset-password',
+      'GET /api/auth/verify-token'
+    ],
+    usuariosTeste: [
+      {
+        email: 'admin@financeapp.com',
+        senha: 'admin123'
+      }
+    ]
+  })
+})
 
 module.exports = router

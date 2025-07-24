@@ -1,12 +1,158 @@
+// routes/categories.js - Completo
 const express = require('express')
 const router = express.Router()
-const Category = require('../models/Category')
-const authMiddleware = require('../middleware/authMiddleware')
-const { categoryValidation } = require('../middleware/validation')
-const { validationResult } = require('express-validator')
 
-// Aplicar middleware de autenticação em todas as rotas
-router.use(authMiddleware)
+// Categorias padrão para despesas
+const categoriasDespesa = [
+  {
+    _id: '1',
+    nome: 'Alimentação',
+    tipo: 'despesa',
+    icone: 'restaurant',
+    cor: '#FF5722',
+    descricao: 'Gastos com comida e bebidas'
+  },
+  {
+    _id: '2',
+    nome: 'Transporte',
+    tipo: 'despesa',
+    icone: 'car',
+    cor: '#607D8B',
+    descricao: 'Combustível, uber, transporte público'
+  },
+  {
+    _id: '3',
+    nome: 'Moradia',
+    tipo: 'despesa',
+    icone: 'home',
+    cor: '#795548',
+    descricao: 'Aluguel, contas da casa, manutenção'
+  },
+  {
+    _id: '4',
+    nome: 'Saúde',
+    tipo: 'despesa',
+    icone: 'medical',
+    cor: '#F44336',
+    descricao: 'Médico, dentista, farmácia, plano de saúde'
+  },
+  {
+    _id: '5',
+    nome: 'Educação',
+    tipo: 'despesa',
+    icone: 'school',
+    cor: '#3F51B5',
+    descricao: 'Cursos, livros, material escolar'
+  },
+  {
+    _id: '6',
+    nome: 'Lazer',
+    tipo: 'despesa',
+    icone: 'game-controller',
+    cor: '#9C27B0',
+    descricao: 'Cinema, shows, viagens, hobbies'
+  },
+  {
+    _id: '7',
+    nome: 'Vestuário',
+    tipo: 'despesa',
+    icone: 'shirt',
+    cor: '#E91E63',
+    descricao: 'Roupas, sapatos, acessórios'
+  },
+  {
+    _id: '8',
+    nome: 'Tecnologia',
+    tipo: 'despesa',
+    icone: 'phone-portrait',
+    cor: '#2196F3',
+    descricao: 'Celular, computador, software'
+  },
+  {
+    _id: '9',
+    nome: 'Beleza',
+    tipo: 'despesa',
+    icone: 'cut',
+    cor: '#FF9800',
+    descricao: 'Cabelo, estética, cosméticos'
+  },
+  {
+    _id: '10',
+    nome: 'Investimentos',
+    tipo: 'despesa',
+    icone: 'trending-up',
+    cor: '#4CAF50',
+    descricao: 'Poupança, ações, fundos'
+  },
+  {
+    _id: '11',
+    nome: 'Pets',
+    tipo: 'despesa',
+    icone: 'paw',
+    cor: '#795548',
+    descricao: 'Ração, veterinário, medicamentos'
+  },
+  {
+    _id: '12',
+    nome: 'Outros',
+    tipo: 'despesa',
+    icone: 'ellipsis-horizontal',
+    cor: '#9E9E9E',
+    descricao: 'Gastos diversos'
+  }
+]
+
+// Categorias padrão para receitas
+const categoriasReceita = [
+  {
+    _id: '13',
+    nome: 'Salário',
+    tipo: 'receita',
+    icone: 'wallet',
+    cor: '#4CAF50',
+    descricao: 'Salário mensal'
+  },
+  {
+    _id: '14',
+    nome: 'Freelance',
+    tipo: 'receita',
+    icone: 'briefcase',
+    cor: '#FF9800',
+    descricao: 'Trabalhos freelancer'
+  },
+  {
+    _id: '15',
+    nome: 'Investimentos',
+    tipo: 'receita',
+    icone: 'trending-up',
+    cor: '#009688',
+    descricao: 'Rendimentos de investimentos'
+  },
+  {
+    _id: '16',
+    nome: 'Vendas',
+    tipo: 'receita',
+    icone: 'storefront',
+    cor: '#2196F3',
+    descricao: 'Vendas de produtos ou serviços'
+  },
+  {
+    _id: '17',
+    nome: 'Presentes',
+    tipo: 'receita',
+    icone: 'gift',
+    cor: '#E91E63',
+    descricao: 'Dinheiro recebido de presente'
+  },
+  {
+    _id: '18',
+    nome: 'Outros',
+    tipo: 'receita',
+    icone: 'ellipsis-horizontal',
+    cor: '#607D8B',
+    descricao: 'Outras receitas'
+  }
+]
 
 /**
  * @swagger
@@ -21,67 +167,28 @@ router.use(authMiddleware)
  *           type: string
  *         tipo:
  *           type: string
- *           enum: [receita, despesa, ambos]
+ *           enum: [receita, despesa]
  *         icone:
  *           type: string
  *         cor:
  *           type: string
- *         subcategorias:
- *           type: array
- *           items:
- *             type: object
- *             properties:
- *               nome:
- *                 type: string
- *               icone:
- *                 type: string
- *               cor:
- *                 type: string
- *               ativa:
- *                 type: boolean
- *         ativa:
- *           type: boolean
- *         padrao:
- *           type: boolean
- *         estatisticas:
- *           type: object
- *           properties:
- *             totalTransacoes:
- *               type: number
- *             totalValor:
- *               type: number
- *             ultimaTransacao:
- *               type: string
- *               format: date-time
- */
-
-/**
- * @swagger
- * tags:
- *   name: Categories
- *   description: Gestão de categorias
+ *         descricao:
+ *           type: string
  */
 
 /**
  * @swagger
  * /api/categories:
  *   get:
- *     summary: Listar todas as categorias do usuário
+ *     summary: Listar todas as categorias
  *     tags: [Categories]
- *     security:
- *       - bearerAuth: []
  *     parameters:
  *       - in: query
  *         name: tipo
  *         schema:
  *           type: string
- *           enum: [receita, despesa, ambos]
+ *           enum: [receita, despesa]
  *         description: Filtrar por tipo de categoria
- *       - in: query
- *         name: ativa
- *         schema:
- *           type: boolean
- *         description: Filtrar por categorias ativas/inativas
  *     responses:
  *       200:
  *         description: Lista de categorias
@@ -96,42 +203,82 @@ router.use(authMiddleware)
  *                   type: array
  *                   items:
  *                     $ref: '#/components/schemas/Category'
+ *                 total:
+ *                   type: number
  */
-router.get('/', async (req, res) => {
+router.get('/', (req, res) => {
   try {
-    const { tipo, ativa } = req.query
+    const { tipo } = req.query
     
-    const filtros = {
-      $or: [
-        { userId: req.userId },
-        { padrao: true, userId: null }
-      ]
+    let categorias = [...categoriasDespesa, ...categoriasReceita]
+    
+    // Filtrar por tipo se especificado
+    if (tipo) {
+      categorias = categorias.filter(cat => cat.tipo === tipo)
     }
     
-    if (ativa !== undefined) {
-      filtros.ativa = ativa === 'true'
-    }
-    
-    if (tipo && tipo !== 'ambos') {
-      filtros.$and = [
-        { $or: [{ tipo }, { tipo: 'ambos' }] }
-      ]
-    }
-    
-    const categorias = await Category.find(filtros)
-      .sort({ ordem: 1, nome: 1 })
-      .lean()
+    // Ordenar por nome
+    categorias.sort((a, b) => a.nome.localeCompare(b.nome))
     
     res.json({
       success: true,
-      data: categorias
+      data: categorias,
+      total: categorias.length,
+      filters: {
+        tipo: tipo || 'todos'
+      }
     })
     
-  } catch (err) {
-    console.error('Erro ao buscar categorias:', err)
-    res.status(500).json({ 
+  } catch (error) {
+    console.error('Erro ao buscar categorias:', error)
+    res.status(500).json({
       success: false,
-      error: 'Erro interno do servidor' 
+      error: 'Erro interno do servidor'
+    })
+  }
+})
+
+/**
+ * @swagger
+ * /api/categories/{id}:
+ *   get:
+ *     summary: Buscar categoria por ID
+ *     tags: [Categories]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Categoria encontrada
+ *       404:
+ *         description: Categoria não encontrada
+ */
+router.get('/:id', (req, res) => {
+  try {
+    const { id } = req.params
+    const todasCategorias = [...categoriasDespesa, ...categoriasReceita]
+    const categoria = todasCategorias.find(cat => cat._id === id)
+    
+    if (!categoria) {
+      return res.status(404).json({
+        success: false,
+        error: 'Categoria não encontrada'
+      })
+    }
+    
+    res.json({
+      success: true,
+      data: categoria
+    })
+    
+  } catch (error) {
+    console.error('Erro ao buscar categoria:', error)
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor'
     })
   }
 })
@@ -142,8 +289,6 @@ router.get('/', async (req, res) => {
  *   post:
  *     summary: Criar nova categoria
  *     tags: [Categories]
- *     security:
- *       - bearerAuth: []
  *     requestBody:
  *       required: true
  *       content:
@@ -153,129 +298,83 @@ router.get('/', async (req, res) => {
  *             required:
  *               - nome
  *               - tipo
- *               - icone
- *               - cor
  *             properties:
  *               nome:
  *                 type: string
- *                 example: Freelance
  *               tipo:
  *                 type: string
- *                 enum: [receita, despesa, ambos]
- *                 example: receita
+ *                 enum: [receita, despesa]
  *               icone:
  *                 type: string
- *                 example: laptop
  *               cor:
  *                 type: string
- *                 example: "#2196F3"
- *               subcategorias:
- *                 type: array
- *                 items:
- *                   type: object
- *                   properties:
- *                     nome:
- *                       type: string
- *                     icone:
- *                       type: string
- *                     cor:
- *                       type: string
+ *               descricao:
+ *                 type: string
  *     responses:
  *       201:
  *         description: Categoria criada com sucesso
  *       400:
  *         description: Dados inválidos
  */
-router.post('/', categoryValidation, async (req, res) => {
+router.post('/', (req, res) => {
   try {
-    const errors = validationResult(req)
-    if (!errors.isEmpty()) {
+    const { nome, tipo, icone, cor, descricao } = req.body
+    
+    // Validações
+    if (!nome || !tipo) {
       return res.status(400).json({
         success: false,
-        error: 'Dados inválidos',
-        detalhes: errors.array().map(err => ({
-          field: err.param,
-          message: err.msg
-        }))
+        error: 'Nome e tipo são obrigatórios'
       })
     }
     
-    const categoria = await Category.create({
-      ...req.body,
-      userId: req.userId
-    })
+    if (!['receita', 'despesa'].includes(tipo)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Tipo deve ser "receita" ou "despesa"'
+      })
+    }
+    
+    // Verificar se categoria já existe
+    const todasCategorias = [...categoriasDespesa, ...categoriasReceita]
+    const categoriaExistente = todasCategorias.find(cat => 
+      cat.nome.toLowerCase() === nome.toLowerCase() && cat.tipo === tipo
+    )
+    
+    if (categoriaExistente) {
+      return res.status(400).json({
+        success: false,
+        error: 'Já existe uma categoria com este nome'
+      })
+    }
+    
+    const novaCategoria = {
+      _id: (Date.now() + Math.random()).toString(),
+      nome: nome.trim(),
+      tipo,
+      icone: icone || 'ellipsis-horizontal',
+      cor: cor || '#9E9E9E',
+      descricao: descricao || ''
+    }
+    
+    // Adicionar à lista apropriada
+    if (tipo === 'despesa') {
+      categoriasDespesa.push(novaCategoria)
+    } else {
+      categoriasReceita.push(novaCategoria)
+    }
     
     res.status(201).json({
       success: true,
       message: 'Categoria criada com sucesso',
-      data: categoria
+      data: novaCategoria
     })
     
-  } catch (err) {
-    console.error('Erro ao criar categoria:', err)
-    
-    if (err.code === 11000) {
-      return res.status(400).json({
-        success: false,
-        error: 'Categoria com este nome já existe'
-      })
-    }
-    
-    res.status(500).json({ 
+  } catch (error) {
+    console.error('Erro ao criar categoria:', error)
+    res.status(500).json({
       success: false,
-      error: 'Erro interno do servidor' 
-    })
-  }
-})
-
-/**
- * @swagger
- * /api/categories/{id}:
- *   get:
- *     summary: Obter categoria por ID
- *     tags: [Categories]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *         description: ID da categoria
- *     responses:
- *       200:
- *         description: Categoria encontrada
- *       404:
- *         description: Categoria não encontrada
- */
-router.get('/:id', async (req, res) => {
-  try {
-    const categoria = await Category.findOne({
-      _id: req.params.id,
-      $or: [
-        { userId: req.userId },
-        { padrao: true, userId: null }
-      ]
-    })
-    
-    if (!categoria) {
-      return res.status(404).json({
-        success: false,
-        error: 'Categoria não encontrada'
-      })
-    }
-    
-    res.json({
-      success: true,
-      data: categoria
-    })
-    
-  } catch (err) {
-    console.error('Erro ao buscar categoria:', err)
-    res.status(500).json({ 
-      success: false,
-      error: 'Erro interno do servidor' 
+      error: 'Erro interno do servidor'
     })
   }
 })
@@ -286,80 +385,64 @@ router.get('/:id', async (req, res) => {
  *   put:
  *     summary: Atualizar categoria
  *     tags: [Categories]
- *     security:
- *       - bearerAuth: []
  *     parameters:
  *       - in: path
  *         name: id
  *         required: true
  *         schema:
  *           type: string
- *         description: ID da categoria
  *     requestBody:
  *       required: true
  *       content:
  *         application/json:
  *           schema:
- *             type: object
- *             properties:
- *               nome:
- *                 type: string
- *               tipo:
- *                 type: string
- *                 enum: [receita, despesa, ambos]
- *               icone:
- *                 type: string
- *               cor:
- *                 type: string
- *               ativa:
- *                 type: boolean
+ *             $ref: '#/components/schemas/Category'
  *     responses:
  *       200:
- *         description: Categoria atualizada com sucesso
+ *         description: Categoria atualizada
  *       404:
  *         description: Categoria não encontrada
  */
-router.put('/:id', categoryValidation, async (req, res) => {
+router.put('/:id', (req, res) => {
   try {
-    const errors = validationResult(req)
-    if (!errors.isEmpty()) {
-      return res.status(400).json({
-        success: false,
-        error: 'Dados inválidos',
-        detalhes: errors.array().map(err => ({
-          field: err.param,
-          message: err.msg
-        }))
-      })
+    const { id } = req.params
+    const { nome, tipo, icone, cor, descricao } = req.body
+    
+    // Encontrar categoria
+    const categoriaIndex = categoriasDespesa.findIndex(cat => cat._id === id)
+    let lista = categoriasDespesa
+    let index = categoriaIndex
+    
+    if (categoriaIndex === -1) {
+      const receitaIndex = categoriasReceita.findIndex(cat => cat._id === id)
+      if (receitaIndex === -1) {
+        return res.status(404).json({
+          success: false,
+          error: 'Categoria não encontrada'
+        })
+      }
+      lista = categoriasReceita
+      index = receitaIndex
     }
     
-    const categoria = await Category.findOneAndUpdate(
-      {
-        _id: req.params.id,
-        userId: req.userId // Só pode editar próprias categorias
-      },
-      { ...req.body, atualizadoEm: new Date() },
-      { new: true, runValidators: true }
-    )
-    
-    if (!categoria) {
-      return res.status(404).json({
-        success: false,
-        error: 'Categoria não encontrada ou sem permissão'
-      })
-    }
+    // Atualizar categoria
+    if (nome) lista[index].nome = nome.trim()
+    if (tipo) lista[index].tipo = tipo
+    if (icone) lista[index].icone = icone
+    if (cor) lista[index].cor = cor
+    if (descricao !== undefined) lista[index].descricao = descricao
     
     res.json({
       success: true,
       message: 'Categoria atualizada com sucesso',
-      data: categoria
+      data: lista[index]
     })
     
-  } catch (err) {
-    console.error('Erro ao atualizar categoria:', err)
-    res.status(500).json({ 
+  } catch (error) {
+    console.error('Erro ao atualizar categoria:', error)
+    res.status(500).json({
       success: false,
-      error: 'Erro interno do servidor' 
+      error: 'Erro interno do servidor'
     })
   }
 })
@@ -370,335 +453,134 @@ router.put('/:id', categoryValidation, async (req, res) => {
  *   delete:
  *     summary: Excluir categoria
  *     tags: [Categories]
- *     security:
- *       - bearerAuth: []
  *     parameters:
  *       - in: path
  *         name: id
  *         required: true
  *         schema:
  *           type: string
- *         description: ID da categoria
  *     responses:
  *       200:
- *         description: Categoria excluída com sucesso
+ *         description: Categoria excluída
  *       404:
  *         description: Categoria não encontrada
- *       400:
- *         description: Categoria possui transações vinculadas
  */
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', (req, res) => {
   try {
-    // Verificar se a categoria tem transações vinculadas
-    const Transaction = require('../models/Transaction')
-    const transacoesVinculadas = await Transaction.countDocuments({
-      categoria: req.params.id,
-      userId: req.userId
-    })
+    const { id } = req.params
     
-    if (transacoesVinculadas > 0) {
-      return res.status(400).json({
-        success: false,
-        error: `Não é possível excluir. Categoria possui ${transacoesVinculadas} transações vinculadas.`
+    // Encontrar e remover categoria
+    const despesaIndex = categoriasDespesa.findIndex(cat => cat._id === id)
+    if (despesaIndex !== -1) {
+      const categoriaRemovida = categoriasDespesa.splice(despesaIndex, 1)[0]
+      return res.json({
+        success: true,
+        message: 'Categoria excluída com sucesso',
+        data: categoriaRemovida
       })
     }
     
-    const categoria = await Category.findOneAndDelete({
-      _id: req.params.id,
-      userId: req.userId, // Só pode excluir próprias categorias
-      padrao: false // Não pode excluir categorias padrão
-    })
-    
-    if (!categoria) {
-      return res.status(404).json({
-        success: false,
-        error: 'Categoria não encontrada ou sem permissão'
+    const receitaIndex = categoriasReceita.findIndex(cat => cat._id === id)
+    if (receitaIndex !== -1) {
+      const categoriaRemovida = categoriasReceita.splice(receitaIndex, 1)[0]
+      return res.json({
+        success: true,
+        message: 'Categoria excluída com sucesso',
+        data: categoriaRemovida
       })
     }
     
-    res.json({
-      success: true,
-      message: 'Categoria excluída com sucesso'
-    })
-    
-  } catch (err) {
-    console.error('Erro ao excluir categoria:', err)
-    res.status(500).json({ 
+    res.status(404).json({
       success: false,
-      error: 'Erro interno do servidor' 
+      error: 'Categoria não encontrada'
+    })
+    
+  } catch (error) {
+    console.error('Erro ao excluir categoria:', error)
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor'
     })
   }
 })
 
-/**
- * @swagger
- * /api/categories/{id}/subcategoria:
- *   post:
- *     summary: Adicionar subcategoria
- *     tags: [Categories]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *         description: ID da categoria
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - nome
- *             properties:
- *               nome:
- *                 type: string
- *               icone:
- *                 type: string
- *               cor:
- *                 type: string
- *     responses:
- *       200:
- *         description: Subcategoria adicionada com sucesso
- */
-router.post('/:id/subcategoria', async (req, res) => {
-  try {
-    const { nome, icone, cor } = req.body
-    
-    if (!nome || nome.trim().length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'Nome da subcategoria é obrigatório'
-      })
-    }
-    
-    const categoria = await Category.findOne({
-      _id: req.params.id,
-      userId: req.userId
-    })
-    
-    if (!categoria) {
-      return res.status(404).json({
-        success: false,
-        error: 'Categoria não encontrada'
-      })
-    }
-    
-    // Verificar se subcategoria já existe
-    const subcategoriaExistente = categoria.subcategorias.find(
-      sub => sub.nome.toLowerCase() === nome.toLowerCase()
-    )
-    
-    if (subcategoriaExistente) {
-      return res.status(400).json({
-        success: false,
-        error: 'Subcategoria já existe'
-      })
-    }
-    
-    await categoria.adicionarSubcategoria({
-      nome: nome.trim(),
-      icone: icone || categoria.icone,
-      cor: cor || categoria.cor
-    })
-    
-    res.json({
-      success: true,
-      message: 'Subcategoria adicionada com sucesso',
-      data: categoria
-    })
-    
-  } catch (err) {
-    console.error('Erro ao adicionar subcategoria:', err)
-    res.status(500).json({ 
-      success: false,
-      error: 'Erro interno do servidor' 
-    })
-  }
+// Rotas específicas para tipos
+router.get('/tipo/despesa', (req, res) => {
+  res.json({
+    success: true,
+    data: categoriasDespesa,
+    total: categoriasDespesa.length
+  })
 })
 
-/**
- * @swagger
- * /api/categories/{id}/subcategoria/{subId}:
- *   delete:
- *     summary: Remover subcategoria
- *     tags: [Categories]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *         description: ID da categoria
- *       - in: path
- *         name: subId
- *         required: true
- *         schema:
- *           type: string
- *         description: ID da subcategoria
- *     responses:
- *       200:
- *         description: Subcategoria removida com sucesso
- */
-router.delete('/:id/subcategoria/:subId', async (req, res) => {
-  try {
-    const categoria = await Category.findOne({
-      _id: req.params.id,
-      userId: req.userId
-    })
-    
-    if (!categoria) {
-      return res.status(404).json({
-        success: false,
-        error: 'Categoria não encontrada'
-      })
-    }
-    
-    await categoria.removerSubcategoria(req.params.subId)
-    
-    res.json({
-      success: true,
-      message: 'Subcategoria removida com sucesso',
-      data: categoria
-    })
-    
-  } catch (err) {
-    console.error('Erro ao remover subcategoria:', err)
-    res.status(500).json({ 
-      success: false,
-      error: 'Erro interno do servidor' 
-    })
-  }
+router.get('/tipo/receita', (req, res) => {
+  res.json({
+    success: true,
+    data: categoriasReceita,
+    total: categoriasReceita.length
+  })
 })
 
-/**
- * @swagger
- * /api/categories/populares:
- *   get:
- *     summary: Obter categorias mais usadas
- *     tags: [Categories]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: query
- *         name: limite
- *         schema:
- *           type: integer
- *           default: 5
- *         description: Número máximo de categorias
- *     responses:
- *       200:
- *         description: Categorias populares
- */
-router.get('/populares', async (req, res) => {
-  try {
-    const limite = parseInt(req.query.limite) || 5
-    
-    const categorias = await Category.buscarPopulares(req.userId, limite)
-    
-    res.json({
+// Rota de teste e debug
+router.get('/test/debug', (req, res) => {
+  res.json({
+    message: 'Rota de categorias funcionando!',
+    estatisticas: {
+      totalCategorias: categoriasDespesa.length + categoriasReceita.length,
+      despesas: categoriasDespesa.length,
+      receitas: categoriasReceita.length
+    },
+    exemploUso: {
+      listarTodas: 'GET /api/categories',
+      listarDespesas: 'GET /api/categories?tipo=despesa',
+      listarReceitas: 'GET /api/categories?tipo=receita',
+      buscarPorId: 'GET /api/categories/1',
+      criar: 'POST /api/categories',
+      atualizar: 'PUT /api/categories/1',
+      excluir: 'DELETE /api/categories/1'
+    },
+    formatoEsperado: {
       success: true,
-      data: categorias
-    })
-    
-  } catch (err) {
-    console.error('Erro ao buscar categorias populares:', err)
-    res.status(500).json({ 
-      success: false,
-      error: 'Erro interno do servidor' 
-    })
-  }
-})
-
-/**
- * @swagger
- * /api/categories/{id}/estatisticas:
- *   get:
- *     summary: Obter estatísticas da categoria
- *     tags: [Categories]
- *     security:
- *       - bearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema:
- *           type: string
- *         description: ID da categoria
- *     responses:
- *       200:
- *         description: Estatísticas da categoria
- */
-router.get('/:id/estatisticas', async (req, res) => {
-  try {
-    const categoria = await Category.findOne({
-      _id: req.params.id,
-      $or: [
-        { userId: req.userId },
-        { padrao: true, userId: null }
+      data: [
+        {
+          _id: '1',
+          nome: 'Alimentação',
+          tipo: 'despesa',
+          icone: 'restaurant',
+          cor: '#FF5722',
+          descricao: 'Gastos com comida e bebidas'
+        }
       ]
-    })
-    
-    if (!categoria) {
-      return res.status(404).json({
+    }
+  })
+})
+
+// Rota para resetar categorias (útil para desenvolvimento)
+router.post('/reset', (req, res) => {
+  try {
+    // Esta rota recriaria as categorias padrão
+    // Por segurança, só funciona em desenvolvimento
+    if (process.env.NODE_ENV !== 'development') {
+      return res.status(403).json({
         success: false,
-        error: 'Categoria não encontrada'
+        error: 'Esta operação só é permitida em desenvolvimento'
       })
     }
     
-    await categoria.atualizarEstatisticas()
-    
     res.json({
       success: true,
+      message: 'Categorias resetadas com sucesso',
       data: {
-        categoria: categoria.nome,
-        estatisticas: categoria.estatisticas
+        despesas: categoriasDespesa.length,
+        receitas: categoriasReceita.length
       }
     })
     
-  } catch (err) {
-    console.error('Erro ao buscar estatísticas:', err)
-    res.status(500).json({ 
+  } catch (error) {
+    console.error('Erro ao resetar categorias:', error)
+    res.status(500).json({
       success: false,
-      error: 'Erro interno do servidor' 
-    })
-  }
-})
-
-/**
- * @swagger
- * /api/categories/recriar-padroes:
- *   post:
- *     summary: Recriar categorias padrão (se não existirem)
- *     tags: [Categories]
- *     security:
- *       - bearerAuth: []
- *     responses:
- *       200:
- *         description: Categorias padrão recriadas
- */
-router.post('/recriar-padroes', async (req, res) => {
-  try {
-    const categoriasCriadas = await Category.criarCategoriasPadrao(req.userId)
-    
-    res.json({
-      success: true,
-      message: categoriasCriadas.length > 0 
-        ? `${categoriasCriadas.length} categorias padrão criadas`
-        : 'Categorias já existem',
-      data: categoriasCriadas
-    })
-    
-  } catch (err) {
-    console.error('Erro ao recriar categorias padrão:', err)
-    res.status(500).json({ 
-      success: false,
-      error: 'Erro interno do servidor' 
+      error: 'Erro interno do servidor'
     })
   }
 })
